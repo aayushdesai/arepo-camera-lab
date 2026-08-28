@@ -1,3 +1,3 @@
 """Interactive camera exploration for portable AREPO cell scenes."""
 
-__version__ = "0.4.1"
+__version__ = "0.4.2"

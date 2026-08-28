@@ -113,6 +113,10 @@ class CameraLabTest(unittest.TestCase):
             self.assertIn('id="snapshot" aria-label="Available AREPO snapshots"',
                           server.APP_HTML)
             self.assertIn("/api/catalog", server.APP_HTML)
+            self.assertIn("selectionDirty=false", server.APP_HTML)
+            self.assertIn("Selected AREPO snapshot", server.APP_HTML)
+            self.assertIn("visible snapshot remains", server.APP_HTML)
+            self.assertIn("snapshot.disabled=Boolean(data.loading)", server.APP_HTML)
             self.assertIn("Local camera-lab server unavailable", server.APP_HTML)
             self.assertIn("Archive &amp; close", server.APP_HTML)
             self.assertIn("/api/shutdown", server.APP_HTML)
