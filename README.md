@@ -187,8 +187,10 @@ Dataset names are explicit because AREPO outputs differ by configuration. Unit
 factors are mandatory. The sidecar is joined to the scene by stable particle ID
 and rejected if any displayed cell is missing or duplicated. A valid magnetic
 sidecar adds `|B|`, signed axial and azimuthal field, magnetic pressure, Alfvén
-speed, B-velocity alignment, and toroidal/poloidal fractions. Pressure also
-enables plasma beta; sound speed enables Mach number.
+speed, field/velocity alignment, toroidal and poloidal fractions, plasma beta,
+gas pressure, the derived `P/rho^(5/3)` entropy proxy, sound speed, and Mach
+number. These channels retain their physical arrays and can use the same
+copper-blue palette and frozen range contract as the native Voronoi renderer.
 
 ## Camera poses and spline paths
 

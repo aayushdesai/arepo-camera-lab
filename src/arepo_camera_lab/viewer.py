@@ -447,9 +447,14 @@ def build_payload(scene: Path, header: dict, cells: np.memmap,
                     label="plasma beta Pgas / Pmag", units="dimensionless",
                     default_scale="log10", default_palette="turbo")
         if "pressure_dyn_cm2" in auxiliary:
+            pressure = auxiliary["pressure_dyn_cm2"]
             channels["gas_pressure"] = _channel_payload(
-                auxiliary["pressure_dyn_cm2"], label="gas pressure",
+                pressure, label="gas pressure",
                 units="dyn cm^-2", default_scale="log10", default_palette="magma")
+            channels["entropy_proxy"] = _channel_payload(
+                pressure / np.power(np.maximum(density_cgs, 1.0e-99), 5.0 / 3.0),
+                label="entropy proxy P / rho^(5/3)", units="cgs proxy",
+                default_scale="log10", default_palette="viridis")
         if "specific_entropy_cgs" in auxiliary:
             channels["specific_entropy"] = _channel_payload(
                 auxiliary["specific_entropy_cgs"], label="specific entropy",
