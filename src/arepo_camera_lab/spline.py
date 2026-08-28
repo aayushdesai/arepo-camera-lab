@@ -403,8 +403,9 @@ def keyframe_bundle_sha256(paths: list[Path]) -> str:
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--keyframes", type=Path, required=True, nargs="+",
-                        help="One or more downloaded camera-keyframe JSON files")
+    parser.add_argument("--poses", "--keyframes", dest="keyframes", type=Path,
+                        required=True, nargs="+",
+                        help="One or more downloaded camera-pose JSON files")
     parser.add_argument("--template", type=Path, required=True,
                         help="Existing 21-column v055 path providing timeline and physical fields")
     parser.add_argument("--output", type=Path, required=True)

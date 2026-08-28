@@ -409,12 +409,12 @@ button:hover { background: #222b33; }
   <div class="row"><button id="fit">Fit cloud</button><button id="rollRight">Roll +2 deg</button></div>
   <div class="row"><button id="zoomIn">Zoom in 2x</button><button id="zoomOut">Zoom out 2x</button></div>
   <div id="zoomReadout" class="meta"></div>
-  <label for="snapshot">Key pose snapshot</label><input id="snapshot" type="number" min="0" step="1">
-  <div class="meta">A key pose is one spline control point: this camera orientation, look-at point, roll, and zoom at the named simulation snapshot. One pose does not create animation.</div>
-  <button id="addPose">Add current key pose</button>
-  <div class="row"><button id="copyPose">Copy current pose</button><button id="download">Download key poses</button></div>
-  <button id="clearPoses">Clear saved key poses</button>
-  <div id="poseCount" class="meta">0 key poses</div>
+  <label for="snapshot">Simulation snapshot</label><input id="snapshot" type="number" min="0" step="1">
+  <div class="meta">Snapshot identifies the simulation frame. A camera pose stores this view, look-at point, roll, and zoom for that snapshot.</div>
+  <button id="addPose">Save camera pose</button>
+  <div class="row"><button id="copyPose">Copy current pose</button><button id="download">Download camera poses</button></div>
+  <button id="clearPoses">Clear saved camera poses</button>
+  <div id="poseCount" class="meta">0 camera poses</div>
   <div id="timeline">
     <h2>Spline Playback</h2>
     <input id="pathSlider" type="range" min="0" max="0" value="0" step="1">
@@ -509,14 +509,14 @@ function roll(angle){camera.up=rotate(camera.up,camera.forward,angle);Object.ass
 resetButton.onclick=()=>setCamera(initial);fitButton.onclick=()=>{camera.target=[0,0,0];camera.scale=1.05;};rollLeftButton.onclick=()=>roll(-Math.PI/90);rollRightButton.onclick=()=>roll(Math.PI/90);
 zoomInButton.onclick=()=>{camera.scale=Math.max(1e-6,camera.scale*0.5);};zoomOutButton.onclick=()=>{camera.scale=Math.min(100,camera.scale*2);};
 function pose(){const radius=DATA.scene.display_radius_cm,center=DATA.scene.center_cm,look=V.add(center,V.scale(camera.target,radius)),half=camera.scale*radius,pos=V.sub(look,V.scale(camera.forward,4*half));return {snapshot:+snapshotInput.value,position_cm:pos,look_at_cm:look,view_direction:[...camera.forward],up:[...camera.up],screen_half_extent_cm:half,scene_sha256:DATA.scene.sha256,scene_path:DATA.scene.path};}
-function updateCount(){poseCountText.textContent=`${keyframes.length} key pose${keyframes.length===1?'':'s'}`;}
-addPoseButton.onclick=()=>{if(snapshotInput.value===''){statusText.textContent='Enter a snapshot number first.';return;}const p=pose();const old=keyframes.findIndex(k=>k.snapshot===p.snapshot);if(old>=0)keyframes[old]=p;else keyframes.push(p);keyframes.sort((a,b)=>a.snapshot-b.snapshot);const persisted=persistKeyframes();updateCount();statusText.textContent=`Stored pose at snapshot ${p.snapshot}${persisted?' for this browser session':' in memory only'}.`;};
+function updateCount(){poseCountText.textContent=`${keyframes.length} camera pose${keyframes.length===1?'':'s'}`;}
+addPoseButton.onclick=()=>{if(snapshotInput.value===''){statusText.textContent='Enter a snapshot number first.';return;}const p=pose();const old=keyframes.findIndex(k=>k.snapshot===p.snapshot);if(old>=0)keyframes[old]=p;else keyframes.push(p);keyframes.sort((a,b)=>a.snapshot-b.snapshot);const persisted=persistKeyframes();updateCount();statusText.textContent=`Stored camera pose for snapshot ${p.snapshot}${persisted?' in this browser':' in memory only'}.`;};
 copyPoseButton.onclick=async()=>{await navigator.clipboard.writeText(JSON.stringify(pose(),null,2));statusText.textContent='Current pose copied.';};
-downloadButton.onclick=()=>{const payload={schema:'stellar_camera_keyframes_v001',scene:DATA.scene,keyframes};const blob=new Blob([JSON.stringify(payload,null,2)+'\n'],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='stellar_camera_keyframes.json';a.click();URL.revokeObjectURL(a.href);};
-clearPosesButton.onclick=()=>{if(keyframes.length&&confirm('Clear all saved camera key poses from this browser?')){keyframes=[];persistKeyframes();updateCount();statusText.textContent='Saved key poses cleared.';}};
+downloadButton.onclick=()=>{const payload={schema:'stellar_camera_keyframes_v001',scene:DATA.scene,keyframes};const blob=new Blob([JSON.stringify(payload,null,2)+'\n'],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='stellar_camera_poses.json';a.click();URL.revokeObjectURL(a.href);};
+clearPosesButton.onclick=()=>{if(keyframes.length&&confirm('Clear all saved camera poses from this browser?')){keyframes=[];persistKeyframes();updateCount();statusText.textContent='Saved camera poses cleared.';}};
 updateCount();
 timelinePanel.style.display='block';
-if(DATA.camera_path.length){pathSlider.max=DATA.camera_path.length-1;const show=i=>{const entry=DATA.camera_path[i];setCamera(entry);snapshotInput.value=entry.snapshot;pathStatus.textContent=`snapshot ${entry.snapshot} (${i+1}/${DATA.camera_path.length})`;};pathSlider.oninput=()=>show(+pathSlider.value);playButton.onclick=()=>{if(playing)return;playing=setInterval(()=>{let i=(+pathSlider.value+1)%DATA.camera_path.length;pathSlider.value=i;show(i);},50);};stopButton.onclick=()=>{clearInterval(playing);playing=null;};show(0);}else{pathSlider.disabled=true;playButton.disabled=true;stopButton.disabled=true;pathStatus.textContent='No spline is loaded. Save poses from at least two snapshots, compile them, then rebuild this viewer with --camera-path.';}
+if(DATA.camera_path.length){pathSlider.max=DATA.camera_path.length-1;const show=i=>{const entry=DATA.camera_path[i];setCamera(entry);snapshotInput.value=entry.snapshot;pathStatus.textContent=`snapshot ${entry.snapshot} (${i+1}/${DATA.camera_path.length})`;};pathSlider.oninput=()=>show(+pathSlider.value);playButton.onclick=()=>{if(playing)return;playing=setInterval(()=>{let i=(+pathSlider.value+1)%DATA.camera_path.length;pathSlider.value=i;show(i);},50);};stopButton.onclick=()=>{clearInterval(playing);playing=null;};show(0);}else{pathSlider.disabled=true;playButton.disabled=true;stopButton.disabled=true;pathStatus.textContent='No spline is loaded. Save one camera pose at each of at least two different snapshots, compile them, then rebuild this viewer with --camera-path.';}
 document.onkeydown=e=>{if(e.key==='k'||e.key==='K')addPoseButton.click();if(e.code==='Space'){e.preventDefault();if(playing)stopButton.click();else if(DATA.camera_path.length)playButton.click();else statusText.textContent='Space plays a compiled path; this single-scene viewer has none loaded yet.';}if(e.key==='r'||e.key==='R')resetButton.click();};
 render();
 </script>

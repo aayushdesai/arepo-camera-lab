@@ -13,9 +13,8 @@ Voronoi renderer remains the scientific image backend.
 ```bash
 git clone https://github.com/aayushdesai/arepo-camera-lab.git
 cd arepo-camera-lab
-python3 -m venv .venv
-source .venv/bin/activate
-python -m pip install -e .
+conda env create -f environment.yml
+conda activate arepo-camera-lab
 
 # Open a deterministic synthetic disk and bipolar-outflow example.
 arepo-camera-lab demo
@@ -35,9 +34,9 @@ full-file hash pass by adding `--scene-sha256 <digest>`. Files loaded from the
 toolbar are hashed normally.
 
 The server listens only on `127.0.0.1`. Scene files stay on the local computer.
-The toolbar accepts another absolute scene path at any time. Point budgets from
-1,000 to 1,000,000 are supported; 400,000 is the default compromise between
-structure and browser memory.
+The toolbar accepts another absolute scene path at any time. `400000` remains a
+fast default, but there is no artificial upper point limit: enter `0` to load
+every cell in the scene. The status band reports each loading phase and progress.
 
 A completely self-contained HTML file can also be built:
 
@@ -55,7 +54,7 @@ arepo-camera-lab build \
 - Shift-drag or right-drag: pan the look-at point.
 - Wheel or the zoom buttons: change orthographic half extent.
 - Double-click: recenter on a visible feature and move inward by 2.86x.
-- `K`: save the current camera as a key pose.
+- `K`: save the current camera pose for the displayed snapshot.
 - `Space`: play a compiled camera path when one is embedded.
 - `R`: reset the camera.
 
@@ -83,11 +82,11 @@ Magnetic and thermodynamic extensions are intentionally schema-bound. See
 pressure, entropy, and dimensionless-ratio controls and the source fields they
 require.
 
-## Key poses and spline paths
+## Camera poses and spline paths
 
-A key pose records the camera at a named simulation snapshot: look-at point,
-orientation, roll, and orthographic half extent. It does **not** load another
-snapshot and one pose does not create animation.
+A snapshot is a simulation frame. A camera pose is the selected look-at point,
+orientation, roll, and orthographic half extent for one snapshot. These are
+separate concepts throughout the UI.
 
 The live server keeps saved poses in browser local storage while scenes are
 switched. Download the combined JSON regularly. The point budget controls cell
@@ -104,7 +103,7 @@ Save poses from at least two epochs, then compile them against an existing
 
 ```bash
 arepo-camera-lab spline \
-  --keyframes pose_0031.json pose_0421.json pose_0721.json pose_0901.json pose_1016.json \
+  --poses stellar_camera_poses.json \
   --template accepted_camera_path.tsv \
   --output camera_spline.tsv \
   --diagnostics camera_spline_diagnostics.tsv

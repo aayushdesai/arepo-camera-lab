@@ -65,6 +65,24 @@ class CameraLabTest(unittest.TestCase):
             with self.assertRaises(FileExistsError):
                 demo.write_demo_scene(scene, 20_000)
 
+    def test_all_cells_mode_and_async_tracker(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            scene = Path(temporary) / "scene.bin"
+            self.make_scene(scene, 5000)
+            state = server.ViewerState()
+            queued = state.start_load(scene, 31, 0, viewer.sha256(scene))
+            self.assertTrue(queued["loading"])
+            self.assertEqual(queued["requested_points"], 0)
+            self.assertIsNotNone(state.worker)
+            state.worker.join(timeout=10.0)
+            self.assertFalse(state.worker.is_alive())
+            ready = state.status()
+            self.assertFalse(ready["loading"])
+            self.assertEqual(ready["progress"], 1.0)
+            self.assertEqual(ready["point_count"], 5000)
+            self.assertEqual(ready["requested_points"], 0)
+            self.assertIn('id="progress"', server.APP_HTML)
+
     def test_merge_key_pose_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)

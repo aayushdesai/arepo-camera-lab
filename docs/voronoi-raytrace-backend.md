@@ -11,7 +11,7 @@ points. It is suitable for:
 
 - choosing a view and look-at point;
 - exploring density, temperature, kinematics, and geometry;
-- authoring key poses;
+- authoring camera poses across simulation snapshots;
 - evaluating whether a camera motion is worth an exact render.
 
 It does not integrate opacity through Voronoi cells and therefore cannot be
@@ -47,4 +47,3 @@ Before this backend is advertised as exact, it needs:
 
 This architecture avoids forcing millions of topology records through browser
 JavaScript while still giving the user interactive camera feedback.
-

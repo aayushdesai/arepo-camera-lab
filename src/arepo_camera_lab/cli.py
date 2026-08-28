@@ -13,7 +13,8 @@ from . import demo, server, spline, viewer
 def _serve(args: argparse.Namespace) -> int:
     state = server.ViewerState()
     if args.scene is not None:
-        state.load(args.scene, args.snapshot, args.max_points, args.scene_sha256)
+        state.start_load(args.scene, args.snapshot, args.max_points,
+                         args.scene_sha256)
     if not args.no_browser:
         webbrowser.open(f"http://127.0.0.1:{args.port}")
     server.run_server(state, args.port)
@@ -24,7 +25,7 @@ def _demo(args: argparse.Namespace) -> int:
     path = args.output.expanduser().resolve()
     demo.write_demo_scene(path, args.cells)
     state = server.ViewerState()
-    state.load(path, 0, min(args.cells, args.max_points))
+    state.start_load(path, 0, min(args.cells, args.max_points))
     if not args.no_browser:
         webbrowser.open(f"http://127.0.0.1:{args.port}")
     server.run_server(state, args.port)
@@ -42,7 +43,7 @@ def _build(args: argparse.Namespace) -> int:
 
 
 def _spline(args: argparse.Namespace) -> int:
-    command = ["--keyframes", *[str(path) for path in args.keyframes],
+    command = ["--keyframes", *[str(path) for path in args.poses],
                "--template", str(args.template), "--output", str(args.output),
                "--diagnostics", str(args.diagnostics), "--tension", str(args.tension)]
     return spline.main(command)
@@ -57,7 +58,8 @@ def parser() -> argparse.ArgumentParser:
     serve = commands.add_parser("serve", help="Start the local live-loading viewer")
     serve.add_argument("--scene", type=Path)
     serve.add_argument("--snapshot", type=int)
-    serve.add_argument("--max-points", type=int, default=400_000)
+    serve.add_argument("--max-points", type=int, default=400_000,
+                       help="Cell points to display; zero loads every cell")
     serve.add_argument("--scene-sha256",
                        help="Trusted manifest digest; otherwise hash the complete scene")
     serve.add_argument("--port", type=int, default=8765)
@@ -68,12 +70,15 @@ def parser() -> argparse.ArgumentParser:
     build.add_argument("--scene", type=Path, required=True)
     build.add_argument("--output", type=Path, required=True)
     build.add_argument("--snapshot", type=int)
-    build.add_argument("--max-points", type=int, default=400_000)
+    build.add_argument("--max-points", type=int, default=400_000,
+                       help="Cell points to display; zero is reserved for live-server all-cells mode")
     build.add_argument("--camera-path", type=Path)
     build.set_defaults(function=_build)
 
-    spline_parser = commands.add_parser("spline", help="Compile saved key poses")
-    spline_parser.add_argument("--keyframes", type=Path, required=True, nargs="+")
+    spline_parser = commands.add_parser("spline", help="Compile saved camera poses")
+    spline_parser.add_argument("--poses", "--keyframes", dest="poses", type=Path,
+                               required=True, nargs="+",
+                               help="One or more downloaded camera-pose JSON files")
     spline_parser.add_argument("--template", type=Path, required=True)
     spline_parser.add_argument("--output", type=Path, required=True)
     spline_parser.add_argument("--diagnostics", type=Path, required=True)
@@ -92,8 +97,12 @@ def parser() -> argparse.ArgumentParser:
 
 def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
-    if hasattr(args, "max_points") and not server.MIN_POINTS <= args.max_points <= server.MAX_POINTS:
-        parser().error(f"--max-points must be in [{server.MIN_POINTS}, {server.MAX_POINTS}]")
+    if args.command == "build" and args.max_points == 0:
+        parser().error("build requires a finite --max-points; use serve with zero for all cells")
+    if hasattr(args, "max_points") and args.max_points != 0 and \
+            args.max_points < server.MIN_POINTS:
+        parser().error(
+            f"--max-points must be zero (all cells) or at least {server.MIN_POINTS}")
     try:
         return int(args.function(args))
     except (FileExistsError, OSError, ValueError) as error:
