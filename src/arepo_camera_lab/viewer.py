@@ -576,6 +576,19 @@ button:hover { background: #222b33; }
   <label for="channel">Physical channel</label><select id="channel"></select>
   <div id="channelMeta" class="meta"></div>
   <div id="fieldNotice" class="meta"></div>
+  <h2>Derived Channel</h2>
+  <label for="derivedSaved">Saved formula</label><select id="derivedSaved"><option value="">New formula</option></select>
+  <div class="row">
+    <div><label for="derivedName">Channel name</label><input id="derivedName" type="text" spellcheck="false" value="gas_to_magnetic_pressure"></div>
+    <div><label for="derivedUnits">Units</label><input id="derivedUnits" type="text" spellcheck="false" value="dimensionless"></div>
+  </div>
+  <label for="derivedExpression">Formula</label><input id="derivedExpression" type="text" spellcheck="false" value="gas_pressure / magnetic_pressure">
+  <div class="row">
+    <select id="derivedOperand" aria-label="Formula field or function"></select>
+    <button id="insertOperand" type="button">Insert</button>
+  </div>
+  <div class="row"><button id="applyDerived" type="button">Add / update</button><button id="removeDerived" type="button">Remove</button></div>
+  <div id="derivedStatus" class="meta"></div>
   <div class="row">
     <div><label for="scaleMode">Scale</label><select id="scaleMode"><option value="linear">Linear</option><option value="log10">Log10</option><option value="symlog">Symmetric log</option></select></div>
     <div><label for="palette">Color map</label><select id="palette"><option value="copper_blue">Copper-blue</option><option value="viridis">Viridis</option><option value="plasma">Plasma</option><option value="magma">Magma</option><option value="inferno">Inferno</option><option value="turbo">Turbo</option><option value="blue_red">Blue-white-red</option><option value="grayscale">Grayscale</option></select></div>
@@ -625,6 +638,9 @@ button:hover { background: #222b33; }
 const DATA = __PAYLOAD__;
 const KEYFRAME_STORAGE='arepo_camera_lab_camera_poses_v002';
 const LEGACY_KEYFRAME_STORAGE='arepo_camera_lab_keyframes_v001';
+const DERIVED_CHANNEL_STORAGE='arepo_camera_lab_derived_channels_v001';
+const SELECTED_CHANNEL_STORAGE='arepo_camera_lab_selected_channel_v001';
+const BASE_CHANNEL_NAMES=Object.keys(DATA.channels);
 const canvas = document.getElementById('view');
 const gl = canvas.getContext('webgl', {antialias: true, alpha: false});
 if (!gl) throw new Error('WebGL is required');
@@ -652,6 +668,12 @@ float transformValue(float x) {
   return symlog(x);
 }
 void main() {
+  if (!(a_value == a_value) || abs(a_value) > 3.402823e38) {
+    v_value = 0.0; v_visible = 0.0;
+    gl_Position = vec4(2.0, 2.0, 1.0, 1.0);
+    gl_PointSize = u_point;
+    return;
+  }
   vec3 rel = a_position - u_target;
   float x = dot(rel, u_right) / (u_scale * u_aspect);
   float y = dot(rel, u_up) / u_scale;
@@ -734,18 +756,104 @@ function reformatNumericInputs(){setNumericValue('low',rangeLow,rangeState.low);
 function transformValue(value){if(scaleMode.value==='log10')return Math.log10(Math.max(value,1e-30));if(scaleMode.value==='symlog')return Math.sign(value)*Math.log10(1+Math.abs(value)/Math.max(rangeState.linthresh,1e-30));return value;}
 function safeRange(){let low=rangeState.low,high=rangeState.high;if(scaleMode.value==='log10'){low=Math.max(low,currentChannel.positive_min??1e-30);high=Math.max(high,low*(1+1e-6));}if(!(high>low))high=low+Math.max(Math.abs(low)*1e-6,1e-30);return [low,high];}
 function updateColorBar(){const gradient=paletteGradients[palette.value];colorBar.style.background=`linear-gradient(90deg,${invert.checked?gradient.split(',').reverse().join(','):gradient})`;}
-function updateChannelMeta(){const [low,high]=safeRange();channelMeta.textContent=`${currentChannel.label} [${currentChannel.units}] | data ${formattedNumber(currentChannel.data_min)} to ${formattedNumber(currentChannel.data_max)} | visible ${formattedNumber(low)} to ${formattedNumber(high)}`;}
+function updateChannelMeta(){const [low,high]=safeRange(),invalid=currentChannel.nonfinite_count?` | ${currentChannel.nonfinite_count.toLocaleString()} invalid hidden`:'';channelMeta.textContent=`${currentChannel.label} [${currentChannel.units}] | data ${formattedNumber(currentChannel.data_min)} to ${formattedNumber(currentChannel.data_max)} | visible ${formattedNumber(low)} to ${formattedNumber(high)}${invalid}`;}
 function applyPreset(){if(rangePreset.value==='custom')return;let low,high;if(rangePreset.value==='symmetric'){const bound=Math.max(Math.abs(currentChannel.percentiles[1]),Math.abs(currentChannel.percentiles[99]));low=-bound;high=bound;}else{const [a,b]=rangePreset.value.split(',').map(Number);low=currentChannel.percentiles[a];high=currentChannel.percentiles[b];}if(scaleMode.value==='log10'&&low<=0)low=currentChannel.positive_min??1e-30;setNumericValue('low',rangeLow,low);setNumericValue('high',rangeHigh,high);updateChannelMeta();}
 function render(){resize();const [low,high]=safeRange();gl.clearColor(0.015,0.022,0.03,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.uniform3fv(locations.target,camera.target);gl.uniform3fv(locations.right,camera.right);gl.uniform3fv(locations.up,camera.up);gl.uniform3fv(locations.forward,camera.forward);gl.uniform1f(locations.scale,camera.scale);gl.uniform1f(locations.aspect,canvas.width/canvas.height);gl.uniform1f(locations.depth,4.0);gl.uniform1f(locations.point,+pointSize.value*(devicePixelRatio||1));gl.uniform1f(locations.domain_low,transformValue(low));gl.uniform1f(locations.domain_high,transformValue(high));gl.uniform1f(locations.scale_mode,scaleIds[scaleMode.value]);gl.uniform1f(locations.linthresh,Math.max(rangeState.linthresh,1e-30));gl.uniform1f(locations.opacity,+opacity.value);gl.uniform1f(locations.palette,paletteIds[palette.value]);gl.uniform1f(locations.gamma,+gamma.value);gl.uniform1f(locations.invert,invert.checked?1:0);gl.uniform1f(locations.saturation,+saturation.value);gl.uniform1f(locations.brightness,+brightness.value);gl.drawArrays(gl.POINTS,0,DATA.point_count);zoomReadout.textContent=`screen half extent ${(camera.scale*DATA.scene.display_radius_cm).toExponential(3)} cm (${camera.scale.toExponential(3)} scene radii)`;requestAnimationFrame(render);}
-function loadChannel(name){currentChannel=DATA.channels[name];gl.bindBuffer(gl.ARRAY_BUFFER,valueBuffer);gl.bufferData(gl.ARRAY_BUFFER,decodeFloat32(currentChannel.values),gl.STATIC_DRAW);gl.vertexAttribPointer(valueLocation,1,gl.FLOAT,false,0,0);scaleMode.value=currentChannel.default_scale;palette.value=currentChannel.default_palette;setNumericValue('linthresh',linthresh,currentChannel.linthresh);setNumericValue('low',rangeLow,currentChannel.default_low);setNumericValue('high',rangeHigh,currentChannel.default_high);rangePreset.value=currentChannel.diverging?'symmetric':'1,99';symlogControl.style.display=scaleMode.value==='symlog'?'block':'none';updateColorBar();updateChannelMeta();}
+const SAFE_FUNCTION_ARITY={abs:1,sqrt:1,log10:1,ln:1,exp:1,min:2,max:2,pow:2,clip:3};
+function tokenizeDerivedExpression(source){
+  const tokens=[];let index=0;
+  while(index<source.length){
+    const rest=source.slice(index),space=rest.match(/^\s+/);if(space){index+=space[0].length;continue;}
+    const number=rest.match(/^(?:(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?)/);if(number){tokens.push({type:'number',value:Number(number[0])});index+=number[0].length;continue;}
+    const identifier=rest.match(/^[A-Za-z_][A-Za-z0-9_]*/);if(identifier){tokens.push({type:'identifier',value:identifier[0]});index+=identifier[0].length;continue;}
+    const symbol=source[index];if('+-*/^(),'.includes(symbol)){tokens.push({type:symbol,value:symbol});index+=1;continue;}
+    throw new Error(`Unexpected character "${symbol}" at position ${index+1}.`);
+  }
+  tokens.push({type:'eof'});return tokens;
+}
+function parseDerivedExpression(source){
+  if(!source.trim())throw new Error('Formula is empty.');
+  const tokens=tokenizeDerivedExpression(source),dependencies=new Set();let at=0;
+  const peek=()=>tokens[at],take=type=>{const token=peek();if(token.type!==type)throw new Error(`Expected ${type}, found ${token.type}.`);at+=1;return token;};
+  function primary(){
+    const token=peek();
+    if(token.type==='number'){at+=1;return {kind:'number',value:token.value};}
+    if(token.type==='('){at+=1;const node=addition();take(')');return node;}
+    if(token.type==='identifier'){
+      at+=1;const name=token.value;
+      if(peek().type==='('){
+        at+=1;const args=[];if(peek().type!==')'){while(true){args.push(addition());if(peek().type!==',')break;at+=1;}}take(')');
+        if(!(name in SAFE_FUNCTION_ARITY))throw new Error(`Unknown function ${name}.`);
+        if(args.length!==SAFE_FUNCTION_ARITY[name])throw new Error(`${name} expects ${SAFE_FUNCTION_ARITY[name]} argument(s).`);
+        return {kind:'call',name,args};
+      }
+      if(name==='pi')return {kind:'number',value:Math.PI};if(name==='e')return {kind:'number',value:Math.E};
+      dependencies.add(name);return {kind:'variable',name};
+    }
+    throw new Error(`Expected a number, field, function, or parenthesis; found ${token.type}.`);
+  }
+  function power(){let left=primary();if(peek().type==='^'){at+=1;left={kind:'binary',operator:'^',left,right:unary()};}return left;}
+  function unary(){if(peek().type==='+'||peek().type==='-'){const operator=take(peek().type).type;return {kind:'unary',operator,operand:unary()};}return power();}
+  function multiply(){let left=unary();while(peek().type==='*'||peek().type==='/'){const operator=take(peek().type).type;left={kind:'binary',operator,left,right:unary()};}return left;}
+  function addition(){let left=multiply();while(peek().type==='+'||peek().type==='-'){const operator=take(peek().type).type;left={kind:'binary',operator,left,right:multiply()};}return left;}
+  const ast=addition();if(peek().type!=='eof')throw new Error(`Unexpected token ${peek().type}.`);return {ast,dependencies:[...dependencies]};
+}
+function evaluateDerivedAst(node,index,arrays){
+  if(node.kind==='number')return node.value;if(node.kind==='variable')return arrays[node.name][index];
+  if(node.kind==='unary'){const value=evaluateDerivedAst(node.operand,index,arrays);return node.operator==='-'?-value:value;}
+  if(node.kind==='binary'){const left=evaluateDerivedAst(node.left,index,arrays),right=evaluateDerivedAst(node.right,index,arrays);if(node.operator==='+')return left+right;if(node.operator==='-')return left-right;if(node.operator==='*')return left*right;if(node.operator==='/')return left/right;return Math.pow(left,right);}
+  const args=node.args.map(argument=>evaluateDerivedAst(argument,index,arrays));
+  if(node.name==='abs')return Math.abs(args[0]);if(node.name==='sqrt')return Math.sqrt(args[0]);if(node.name==='log10')return Math.log10(args[0]);if(node.name==='ln')return Math.log(args[0]);if(node.name==='exp')return Math.exp(args[0]);if(node.name==='min')return Math.min(args[0],args[1]);if(node.name==='max')return Math.max(args[0],args[1]);if(node.name==='pow')return Math.pow(args[0],args[1]);return Math.min(Math.max(args[0],args[1]),args[2]);
+}
+function quantileSorted(values,fraction){if(values.length===1)return values[0];const position=(values.length-1)*fraction,low=Math.floor(position),high=Math.ceil(position),weight=position-low;return values[low]*(1-weight)+values[high]*weight;}
+function derivedChannelPayload(definition,values){
+  const finite=[];for(const value of values)if(Number.isFinite(value))finite.push(value);if(!finite.length)throw new Error(`${definition.name} has no finite values.`);finite.sort((a,b)=>a-b);
+  const percentiles=Array.from({length:101},(_,index)=>quantileSorted(finite,index/100)),positive=finite.filter(value=>value>0),nonzero=finite.filter(value=>value!==0).map(Math.abs).sort((a,b)=>a-b),diverging=finite[0]<0&&finite[finite.length-1]>0;
+  const broadPositive=finite[0]>=0&&positive.length&&positive[positive.length-1]/positive[0]>=100,defaultScale=diverging?'symlog':(broadPositive?'log10':'linear');
+  let low,high;if(diverging){const bound=Math.max(quantileSorted(finite.map(Math.abs).sort((a,b)=>a-b),.99),1e-30);low=-bound;high=bound;}else if(defaultScale==='log10'){low=quantileSorted(positive,.01);high=quantileSorted(positive,.99);}else{low=percentiles[1];high=percentiles[99];}
+  if(!(high>low))high=low+Math.max(Math.abs(low)*1e-6,1e-30);
+  return {label:definition.name.replaceAll('_',' '),units:definition.units||'derived',diverging,default_scale:defaultScale,default_palette:'copper_blue',default_low:low,default_high:high,data_min:finite[0],data_max:finite[finite.length-1],positive_min:positive.length?positive[0]:null,linthresh:nonzero.length?Math.max(quantileSorted(nonzero,.10),1e-30):1,percentiles,array:values,derived:true,source_expression:definition.expression,finite_count:finite.length,nonfinite_count:values.length-finite.length};
+}
+function readDerivedDefinitions(){
+  try{const stored=JSON.parse(localStorage.getItem(DERIVED_CHANNEL_STORAGE)||'null'),rows=Array.isArray(stored)?stored:(stored&&Array.isArray(stored.definitions)?stored.definitions:[]),byName=new Map();for(const row of rows)if(row&&typeof row.name==='string'&&typeof row.expression==='string')byName.set(row.name,{name:row.name,expression:row.expression,units:typeof row.units==='string'?row.units:'derived'});return [...byName.values()];}catch(error){return [];}
+}
+function persistDerivedDefinitions(){localStorage.setItem(DERIVED_CHANNEL_STORAGE,JSON.stringify({schema:'arepo_camera_lab_derived_channels_v001',definitions:derivedDefinitions}));}
+const channelArrays=new Map();
+function valuesForChannel(name){const payload=DATA.channels[name];if(!payload)throw new Error(`Unknown physical channel ${name}.`);if(payload.array)return payload.array;if(!channelArrays.has(name))channelArrays.set(name,decodeFloat32(payload.values));return channelArrays.get(name);}
+function materializeDerivedDefinitions(){
+  for(const name of Object.keys(DATA.channels))if(DATA.channels[name].derived)delete DATA.channels[name];
+  for(const name of [...channelArrays.keys()])if(!BASE_CHANNEL_NAMES.includes(name))channelArrays.delete(name);
+  const definitions=new Map(derivedDefinitions.map(row=>[row.name,row])),resolved=new Map(),active=new Set(),errors=[];
+  function resolve(name){
+    if(BASE_CHANNEL_NAMES.includes(name))return valuesForChannel(name);if(resolved.has(name))return resolved.get(name);const definition=definitions.get(name);if(!definition)throw new Error(`Unknown field ${name}.`);if(active.has(name))throw new Error(`Cyclic derived-channel dependency at ${name}.`);active.add(name);
+    try{const parsed=parseDerivedExpression(definition.expression),arrays={};for(const dependency of parsed.dependencies)arrays[dependency]=resolve(dependency);const values=new Float32Array(DATA.point_count),limit=3.4028234663852886e38;for(let index=0;index<values.length;++index){const value=evaluateDerivedAst(parsed.ast,index,arrays);values[index]=Number.isFinite(value)&&Math.abs(value)<=limit?value:NaN;}DATA.channels[name]=derivedChannelPayload(definition,values);channelArrays.set(name,values);resolved.set(name,values);return values;}finally{active.delete(name);}
+  }
+  for(const definition of derivedDefinitions){try{resolve(definition.name);}catch(error){errors.push(`${definition.name}: ${error.message}`);}}
+  return errors;
+}
+function rebuildChannelOptions(selected){
+  channel.replaceChildren();const physical=document.createElement('optgroup');physical.label='Physical';for(const name of BASE_CHANNEL_NAMES){const option=document.createElement('option');option.value=name;option.textContent=name.replaceAll('_',' ');physical.appendChild(option);}channel.appendChild(physical);
+  const names=derivedDefinitions.map(row=>row.name).filter(name=>DATA.channels[name]);if(names.length){const derived=document.createElement('optgroup');derived.label='Derived';for(const name of names){const option=document.createElement('option');option.value=name;option.textContent=name.replaceAll('_',' ');derived.appendChild(option);}channel.appendChild(derived);}channel.value=DATA.channels[selected]?selected:'rotational_fraction';
+}
+function rebuildDerivedEditor(){
+  const selected=derivedSaved.value;derivedSaved.replaceChildren(new Option('New formula',''));for(const definition of derivedDefinitions)derivedSaved.appendChild(new Option(definition.name.replaceAll('_',' '),definition.name));derivedSaved.value=derivedDefinitions.some(row=>row.name===selected)?selected:'';
+  derivedOperand.replaceChildren();const fields=document.createElement('optgroup');fields.label='Physical channels';for(const name of [...BASE_CHANNEL_NAMES,...derivedDefinitions.map(row=>row.name).filter(name=>DATA.channels[name])])fields.appendChild(new Option(name.replaceAll('_',' '),name));derivedOperand.appendChild(fields);const functions=document.createElement('optgroup');functions.label='Functions';for(const entry of ['abs()','sqrt()','log10()','ln()','exp()','min(, )','max(, )','pow(, )','clip(, , )'])functions.appendChild(new Option(entry,entry));derivedOperand.appendChild(functions);
+}
+function loadChannel(name){currentChannel=DATA.channels[name];if(!currentChannel)return;gl.bindBuffer(gl.ARRAY_BUFFER,valueBuffer);gl.bufferData(gl.ARRAY_BUFFER,valuesForChannel(name),gl.STATIC_DRAW);gl.vertexAttribPointer(valueLocation,1,gl.FLOAT,false,0,0);scaleMode.value=currentChannel.default_scale;palette.value=currentChannel.default_palette;setNumericValue('linthresh',linthresh,currentChannel.linthresh);setNumericValue('low',rangeLow,currentChannel.default_low);setNumericValue('high',rangeHigh,currentChannel.default_high);rangePreset.value=currentChannel.diverging?'symmetric':'1,99';symlogControl.style.display=scaleMode.value==='symlog'?'block':'none';updateColorBar();updateChannelMeta();localStorage.setItem(SELECTED_CHANNEL_STORAGE,name);if(currentChannel.derived){derivedSaved.value=name;const definition=derivedDefinitions.find(row=>row.name===name);if(definition){derivedName.value=definition.name;derivedUnits.value=definition.units;derivedExpression.value=definition.expression;}}}
 const channel=document.getElementById('channel'),channelMeta=document.getElementById('channelMeta'),fieldNotice=document.getElementById('fieldNotice'),pointSize=document.getElementById('pointSize'),opacity=document.getElementById('opacity'),scaleMode=document.getElementById('scaleMode'),palette=document.getElementById('palette'),rangePreset=document.getElementById('rangePreset'),rangeLow=document.getElementById('rangeLow'),rangeHigh=document.getElementById('rangeHigh'),linthresh=document.getElementById('linthresh'),numericPrecision=document.getElementById('numericPrecision'),symlogControl=document.getElementById('symlogControl'),gamma=document.getElementById('gamma'),saturation=document.getElementById('saturation'),brightness=document.getElementById('brightness'),invert=document.getElementById('invert'),colorBar=document.getElementById('colorBar'),gammaValue=document.getElementById('gammaValue'),saturationValue=document.getElementById('saturationValue'),brightnessValue=document.getElementById('brightnessValue');
+const derivedSaved=document.getElementById('derivedSaved'),derivedName=document.getElementById('derivedName'),derivedUnits=document.getElementById('derivedUnits'),derivedExpression=document.getElementById('derivedExpression'),derivedOperand=document.getElementById('derivedOperand'),insertOperand=document.getElementById('insertOperand'),applyDerived=document.getElementById('applyDerived'),removeDerived=document.getElementById('removeDerived'),derivedStatus=document.getElementById('derivedStatus');
 const sceneMeta=document.getElementById('sceneMeta'),statusText=document.getElementById('status'),snapshotReadout=document.getElementById('snapshot'),poseCountText=document.getElementById('poseCount'),visibleSnapshot=document.getElementById('visibleSnapshot');
 const resetButton=document.getElementById('reset'),fitButton=document.getElementById('fit'),rollLeftButton=document.getElementById('rollLeft'),rollRightButton=document.getElementById('rollRight');
 const zoomInButton=document.getElementById('zoomIn'),zoomOutButton=document.getElementById('zoomOut'),zoomReadout=document.getElementById('zoomReadout');
 const addPoseButton=document.getElementById('addPose'),copyPoseButton=document.getElementById('copyPose'),downloadButton=document.getElementById('download'),clearPosesButton=document.getElementById('clearPoses');
 const timelinePanel=document.getElementById('timeline'),pathSlider=document.getElementById('pathSlider'),pathStatus=document.getElementById('pathStatus'),playButton=document.getElementById('play'),stopButton=document.getElementById('stop');
-let currentChannel=null;
-for(const name of Object.keys(DATA.channels)){const option=document.createElement('option');option.value=name;option.textContent=name.replaceAll('_',' ');channel.appendChild(option);} channel.value='rotational_fraction';loadChannel(channel.value);channel.onchange=()=>loadChannel(channel.value);
+let currentChannel=null,derivedDefinitions=readDerivedDefinitions();
+const initialDerivedErrors=materializeDerivedDefinitions();rebuildChannelOptions(localStorage.getItem(SELECTED_CHANNEL_STORAGE)||'rotational_fraction');rebuildDerivedEditor();loadChannel(channel.value);channel.onchange=()=>loadChannel(channel.value);
+derivedStatus.textContent=initialDerivedErrors.length?initialDerivedErrors.join(' | '):'Built-in plasma beta is gas_pressure / magnetic_pressure.';
+derivedSaved.onchange=()=>{const definition=derivedDefinitions.find(row=>row.name===derivedSaved.value);if(definition){derivedName.value=definition.name;derivedUnits.value=definition.units;derivedExpression.value=definition.expression;}else{derivedName.value='';derivedUnits.value='dimensionless';derivedExpression.value='';}};
+insertOperand.onclick=()=>{const insertion=derivedOperand.value,start=derivedExpression.selectionStart??derivedExpression.value.length,end=derivedExpression.selectionEnd??start;derivedExpression.setRangeText(insertion,start,end,'end');if(insertion.endsWith(')'))derivedExpression.selectionStart=derivedExpression.selectionEnd=derivedExpression.selectionStart-1;derivedExpression.focus();};
+applyDerived.onclick=()=>{const name=derivedName.value.trim(),expression=derivedExpression.value.trim(),units=derivedUnits.value.trim()||'derived';if(!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)){derivedStatus.textContent='Channel name must contain only letters, digits, and underscores and cannot start with a digit.';return;}if(BASE_CHANNEL_NAMES.includes(name)){derivedStatus.textContent=`${name} is a built-in physical channel and cannot be replaced.`;return;}const previous=derivedDefinitions.map(row=>({...row})),index=derivedDefinitions.findIndex(row=>row.name===name);if(index>=0)derivedDefinitions[index]={name,expression,units};else derivedDefinitions.push({name,expression,units});const errors=materializeDerivedDefinitions(),ownError=errors.find(message=>message.startsWith(`${name}:`));if(ownError){derivedDefinitions=previous;materializeDerivedDefinitions();rebuildChannelOptions(channel.value);rebuildDerivedEditor();derivedStatus.textContent=ownError;return;}try{persistDerivedDefinitions();}catch(error){derivedStatus.textContent=`Formula works but could not be saved: ${error.message}`;return;}rebuildChannelOptions(name);rebuildDerivedEditor();derivedSaved.value=name;loadChannel(name);const invalid=DATA.channels[name].nonfinite_count;derivedStatus.textContent=`Saved ${name}${invalid?`; ${invalid.toLocaleString()} non-finite values are hidden`:''}.${errors.length?` Other formula errors: ${errors.join(' | ')}`:''}`;};
+removeDerived.onclick=()=>{const name=derivedSaved.value||derivedName.value.trim();if(!derivedDefinitions.some(row=>row.name===name)){derivedStatus.textContent='Select a saved derived channel to remove.';return;}derivedDefinitions=derivedDefinitions.filter(row=>row.name!==name);materializeDerivedDefinitions();persistDerivedDefinitions();rebuildChannelOptions('rotational_fraction');rebuildDerivedEditor();derivedName.value='';derivedUnits.value='dimensionless';derivedExpression.value='';loadChannel(channel.value);derivedStatus.textContent=`Removed ${name}.`;};
 fieldNotice.textContent=DATA.scene.auxiliary_fields?`Auxiliary fields loaded: ${DATA.scene.auxiliary_fields.fields.join(', ')} | ${DATA.scene.auxiliary_fields.sha256.slice(0,12)}`:'Magnetic field, pressure, and entropy are unavailable because this v052 scene has no auxiliary field sidecar.';
 scaleMode.onchange=()=>{symlogControl.style.display=scaleMode.value==='symlog'?'block':'none';if(scaleMode.value==='log10'&&rangeState.low<=0)setNumericValue('low',rangeLow,currentChannel.positive_min??1e-30);updateChannelMeta();};
 palette.onchange=updateColorBar;invert.onchange=updateColorBar;rangePreset.onchange=applyPreset;

@@ -115,6 +115,16 @@ The minimum, maximum, and symmetric-log threshold use a selectable 4, 6, 8, or
 an input reveals its full stored value, and rendering retains full floating-point
 precision until the value is explicitly edited.
 
+The browser can also define derived channels without rebuilding a scene. Enter
+a stable channel name and a formula, or insert fields from the selector. The
+safe expression language supports `+`, `-`, `*`, `/`, `^`, parentheses, and
+`abs`, `sqrt`, `log10`, `ln`, `exp`, `min`, `max`, `pow`, and `clip`. For
+example, `gas_pressure / magnetic_pressure` reproduces the built-in
+dimensionless `plasma_beta` channel. Formula definitions are stored in the
+browser and recomputed from the newly loaded arrays whenever the catalog
+snapshot changes. Unknown fields and cyclic formulas are rejected; divide by
+zero and other non-finite results are counted and hidden from the point render.
+
 A completely self-contained HTML file can also be built:
 
 ```bash
