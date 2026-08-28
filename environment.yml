@@ -5,6 +5,8 @@ dependencies:
   - python=3.12
   - numpy>=2.0
   - h5py>=3.11
+  - pyvista>=0.46
+  - vtk>=9.3
   - pip
   - pip:
       - -e .

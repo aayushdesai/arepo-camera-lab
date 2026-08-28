@@ -7,7 +7,7 @@ from pathlib import Path
 import sys
 import webbrowser
 
-from . import demo, fields, server, spline, viewer
+from . import demo, fields, server, spline, viewer, vtk_backend
 
 
 def _serve(args: argparse.Namespace) -> int:
@@ -94,6 +94,11 @@ def parser() -> argparse.ArgumentParser:
         "fields", help="Build an explicit physical-field sidecar from HDF5")
     fields.add_arguments(fields_parser)
     fields_parser.set_defaults(function=fields.run)
+
+    vtk_parser = commands.add_parser(
+        "vtk", help="Open the native VTK full-cell physics explorer")
+    vtk_backend.add_arguments(vtk_parser)
+    vtk_parser.set_defaults(function=vtk_backend.run)
 
     demo_parser = commands.add_parser("demo", help="Generate and open a synthetic disk/outflow scene")
     demo_parser.add_argument("--output", type=Path, default=Path("arepo-camera-lab-demo-v052.bin"))

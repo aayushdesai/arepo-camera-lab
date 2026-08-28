@@ -268,7 +268,9 @@ def sample_cells(cells: np.memmap, max_points: int) -> np.ndarray:
 
 
 def _encode_float32(values: np.ndarray) -> str:
-    raw = np.asarray(values, dtype="<f4").tobytes(order="C")
+    limit = np.finfo(np.float32).max
+    bounded = np.clip(np.asarray(values, dtype=np.float64), -limit, limit)
+    raw = np.asarray(bounded, dtype="<f4").tobytes(order="C")
     return base64.b64encode(raw).decode("ascii")
 
 
@@ -593,8 +595,8 @@ button:hover { background: #222b33; }
   <div class="row"><button id="fit">Fit cloud</button><button id="rollRight">Roll +2 deg</button></div>
   <div class="row"><button id="zoomIn">Zoom in 2x</button><button id="zoomOut">Zoom out 2x</button></div>
   <div id="zoomReadout" class="meta"></div>
-  <label for="snapshot">Simulation snapshot</label><input id="snapshot" type="number" min="0" step="1">
-  <div class="meta">Snapshot identifies the simulation frame. A camera pose stores this view, look-at point, roll, and zoom for that snapshot.</div>
+  <label for="snapshot">AREPO snapshot index</label><input id="snapshot" type="number" min="0" step="1">
+  <div class="meta">This is the AREPO output index: 721 means snapshot_0721.hdf5. A camera pose stores only the view, look-at point, roll, and zoom associated with that output.</div>
   <button id="addPose">Save camera pose</button>
   <div class="row"><button id="copyPose">Copy current pose</button><button id="download">Download camera poses</button></div>
   <button id="clearPoses">Clear saved camera poses</button>
@@ -725,7 +727,7 @@ scaleMode.onchange=()=>{symlogControl.style.display=scaleMode.value==='symlog'?'
 palette.onchange=updateColorBar;invert.onchange=updateColorBar;rangePreset.onchange=applyPreset;
 for(const input of [rangeLow,rangeHigh,linthresh])input.oninput=()=>{rangePreset.value='custom';updateChannelMeta();};
 for(const [input,output] of [[gamma,gammaValue],[saturation,saturationValue],[brightness,brightnessValue]]){const update=()=>output.textContent=(+input.value).toFixed(2);input.oninput=update;update();}
-document.getElementById('sceneMeta').textContent=`snapshot ${DATA.scene.snapshot ?? 'unknown'} | ${DATA.point_count.toLocaleString()} / ${DATA.scene.num_cells.toLocaleString()} cells | radius ${DATA.scene.display_radius_cm.toExponential(3)} cm | scene ${DATA.scene.sha256.slice(0,12)}`;
+document.getElementById('sceneMeta').textContent=`AREPO snapshot index ${DATA.scene.snapshot ?? 'unknown'} | ${DATA.point_count.toLocaleString()} / ${DATA.scene.num_cells.toLocaleString()} cells | radius ${DATA.scene.display_radius_cm.toExponential(3)} cm | scene ${DATA.scene.sha256.slice(0,12)}`;
 if(DATA.scene.snapshot !== null) snapshotInput.value=DATA.scene.snapshot;
 canvas.oncontextmenu=e=>e.preventDefault();canvas.onpointerdown=e=>{dragging=true;canvas.classList.add('dragging');last=[e.clientX,e.clientY];panMode=e.shiftKey||e.button===2;canvas.setPointerCapture(e.pointerId);};canvas.onpointerup=e=>{dragging=false;canvas.classList.remove('dragging');canvas.releasePointerCapture(e.pointerId);};canvas.onpointermove=e=>{if(!dragging)return;const dx=e.clientX-last[0],dy=e.clientY-last[1];last=[e.clientX,e.clientY];if(panMode){camera.target=V.add(camera.target,V.add(V.scale(camera.right,-dx*camera.scale*0.0025),V.scale(camera.up,dy*camera.scale*0.0025)));}else{let f=rotate(camera.forward,camera.up,-dx*0.006),r=V.unit(V.cross(f,camera.up));f=rotate(f,r,-dy*0.006);let u=rotate(camera.up,r,-dy*0.006);Object.assign(camera,cleanBasis(f,u));}};
 canvas.onwheel=e=>{e.preventDefault();camera.scale=Math.min(100,Math.max(1e-6,camera.scale*Math.exp(e.deltaY*0.0015)));};

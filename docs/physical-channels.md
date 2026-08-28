@@ -53,3 +53,16 @@ and records its path, digest, schema, and enabled fields in the scene payload.
 The adapter does not infer code units, mean molecular weight, an EOS, or
 comoving conventions. Those remain the responsibility of the simulation's
 verified parameter/build provenance.
+
+For the currently audited snapshot 721, the native HDF5 output contains
+`MagneticField`, `Pressure`, and `SoundSpeed`; it does not contain an entropy
+dataset. Consequently the viewer can expose magnetic-field strength and
+components, magnetic pressure, plasma beta, Alfvén speed, sound speed, Mach
+number, and toroidal/poloidal fractions without inventing an EOS. Entropy stays
+absent until an explicit native entropy dataset or reviewed EOS-derived proxy is
+provided.
+
+Both WebGL and native VTK use the same particle-ID join and the same derived
+scalar definitions. Native VTK additionally exposes sampled magnetic vectors as
+arrow glyphs. These glyphs show local vector direction; they are not magnetic
+field-line integration.

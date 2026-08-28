@@ -4,18 +4,19 @@ The WebGL point renderer and an exact Voronoi renderer solve different
 problems. They should share camera poses and transfer definitions, but remain
 separate execution backends.
 
-## Fast browser mode
+## Interactive point modes
 
-The current browser mode samples deterministic cells and draws them as colored
-points. It is suitable for:
+The browser and native VTK modes sample deterministic cell centers and draw
+them as colored points. Native VTK also supports scalar clipping and magnetic
+vector glyphs. They are suitable for:
 
 - choosing a view and look-at point;
 - exploring density, temperature, kinematics, and geometry;
 - authoring camera poses across simulation snapshots;
 - evaluating whether a camera motion is worth an exact render.
 
-It does not integrate opacity through Voronoi cells and therefore cannot be
-used as the final scientific image.
+Neither mode integrates opacity through Voronoi cells and therefore neither can
+be used as the final scientific image.
 
 ## Exact progressive mode
 
@@ -30,8 +31,8 @@ The exact mode should run as a local native/CUDA companion process:
    samples; after a short idle period, refine to 640x360 or 960x540.
 6. Return pixels plus validity/status counts and deterministic provenance.
 
-The browser remains responsible for controls and pose capture. The companion
-owns mesh traversal, CUDA resources, and scientific validity.
+The browser or VTK window remains responsible for controls and pose capture.
+The companion owns mesh traversal, CPU/CUDA resources, and scientific validity.
 
 ## Acceptance boundary
 

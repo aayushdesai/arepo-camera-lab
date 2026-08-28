@@ -7,7 +7,7 @@ import unittest
 
 import numpy as np
 
-from arepo_camera_lab import demo, fields, server, spline, viewer
+from arepo_camera_lab import demo, fields, server, spline, viewer, vtk_backend
 
 
 class CameraLabTest(unittest.TestCase):
@@ -162,6 +162,66 @@ class CameraLabTest(unittest.TestCase):
                 paths.append(path)
             merged = spline.read_keyframe_files(paths)
             self.assertEqual([row["snapshot"] for row in merged], [31, 721])
+
+    def test_native_vtk_data_and_pose_contract(self) -> None:
+        from types import SimpleNamespace
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scene_path = root / "scene.bin"
+            sidecar_path = root / "fields.npz"
+            self.make_scene(scene_path, 5000)
+            ids = np.arange(5000, dtype=np.uint64) + 100
+            magnetic = np.column_stack((
+                np.linspace(1.0, 2.0, 5000),
+                np.linspace(-1.0, 1.0, 5000),
+                np.linspace(0.5, 1.5, 5000),
+            )).astype(np.float32)
+            np.savez_compressed(
+                sidecar_path, schema=np.asarray(viewer.AUXILIARY_SCHEMA),
+                particle_id=ids, magnetic_field_gauss=magnetic,
+                pressure_dyn_cm2=np.geomspace(1.0e14, 1.0e20, 5000).astype(np.float32),
+                sound_speed_cm_s=np.geomspace(1.0e6, 1.0e8, 5000).astype(np.float32))
+            native = vtk_backend.load_native_scene(
+                scene_path, snapshot=721, max_points=3000,
+                scene_sha256=viewer.sha256(scene_path), field_sidecar=sidecar_path)
+            self.assertEqual(native.points.shape, (3000, 3))
+            self.assertEqual(native.magnetic_vectors.shape, (3000, 3))
+            self.assertIn("plasma_beta", native.channels)
+            transformed = vtk_backend.transform_values(
+                native.channels["radial_velocity"], "symlog", 1.0e5)
+            self.assertTrue(np.all(np.isfinite(transformed)))
+            camera = SimpleNamespace(
+                position=(0.0, 0.0, -2.0), focal_point=(0.0, 0.0, 0.0),
+                up=(0.0, 1.0, 0.0), parallel_scale=0.25)
+            pose = vtk_backend.camera_pose(native, camera)
+            self.assertEqual(pose["snapshot"], 721)
+            self.assertAlmostEqual(
+                pose["screen_half_extent_cm"], native.display_radius_cm * 0.25)
+            output = vtk_backend.write_pose(native, camera, root / "poses")
+            saved = json.loads(output.read_text(encoding="utf-8"))
+            self.assertEqual(saved["keyframes"][0]["snapshot"], 721)
+            self.assertIn("native_vtk", saved["keyframes"][0]["backend"])
+
+    def test_native_vtk_content_addressed_scene_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scene = root / "scene.bin"
+            self.make_scene(scene, 1000)
+            digest = viewer.sha256(scene)
+            cached, actual = vtk_backend.cache_scene_file(
+                scene, digest, root / "cache")
+            self.assertEqual(actual, digest)
+            self.assertEqual(viewer.sha256(cached), digest)
+            repeated, repeated_digest = vtk_backend.cache_scene_file(
+                scene, digest, root / "cache")
+            self.assertEqual(repeated, cached)
+            self.assertEqual(repeated_digest, digest)
+
+    def test_webgl_float32_encoding_bounds_extreme_derived_values(self) -> None:
+        encoded = viewer._encode_float32(np.asarray([1.0, 1.0e400, -1.0e400]))
+        decoded = vtk_backend._decode_float32(encoded, (3,))
+        self.assertTrue(np.all(np.isfinite(decoded)))
+        self.assertEqual(decoded[0], 1.0)
 
 
 if __name__ == "__main__":
