@@ -413,6 +413,7 @@ button:hover { background: #222b33; }
   <div class="meta">A key pose is one spline control point: this camera orientation, look-at point, roll, and zoom at the named simulation snapshot. One pose does not create animation.</div>
   <button id="addPose">Add current key pose</button>
   <div class="row"><button id="copyPose">Copy current pose</button><button id="download">Download key poses</button></div>
+  <button id="clearPoses">Clear saved key poses</button>
   <div id="poseCount" class="meta">0 key poses</div>
   <div id="timeline">
     <h2>Spline Playback</h2>
@@ -425,6 +426,7 @@ button:hover { background: #222b33; }
 <div class="hint">Drag: orbit | Shift/right drag: pan | Wheel: zoom | Double-click: enter feature | K: save pose | Space: play</div>
 <script>
 const DATA = __PAYLOAD__;
+const KEYFRAME_STORAGE='arepo_camera_lab_keyframes_v001';
 const canvas = document.getElementById('view');
 const gl = canvas.getContext('webgl', {antialias: true, alpha: false});
 if (!gl) throw new Error('WebGL is required');
@@ -484,7 +486,9 @@ function rotate(vector, axis, angle) { const u=V.unit(axis), c=Math.cos(angle),s
 function cleanBasis(forward,up) { forward=V.unit(forward); let right=V.unit(V.cross(forward,up)); up=V.unit(V.cross(right,forward)); return {forward,up,right}; }
 const initial=DATA.initial_camera;
 let camera={target:[...initial.target],scale:initial.scale,...cleanBasis(initial.forward,initial.up)};
-let keyframes=[], dragging=false, last=[0,0], panMode=false, playing=null;
+function storedKeyframes(){try{const value=JSON.parse(localStorage.getItem(KEYFRAME_STORAGE)||'[]');return Array.isArray(value)?value:[];}catch(error){return [];}}
+function persistKeyframes(){try{localStorage.setItem(KEYFRAME_STORAGE,JSON.stringify(keyframes));return true;}catch(error){return false;}}
+let keyframes=storedKeyframes(), dragging=false, last=[0,0], panMode=false, playing=null;
 function setCamera(entry) { camera.target=[...entry.target]; camera.scale=entry.scale; Object.assign(camera,cleanBasis(entry.forward,entry.up)); }
 function resize(){const ratio=devicePixelRatio||1,w=Math.floor(canvas.clientWidth*ratio),h=Math.floor(canvas.clientHeight*ratio);if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;gl.viewport(0,0,w,h);} }
 function render(){resize();gl.clearColor(0.015,0.022,0.03,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.uniform3fv(locations.target,camera.target);gl.uniform3fv(locations.right,camera.right);gl.uniform3fv(locations.up,camera.up);gl.uniform3fv(locations.forward,camera.forward);gl.uniform1f(locations.scale,camera.scale);gl.uniform1f(locations.aspect,canvas.width/canvas.height);gl.uniform1f(locations.depth,4.0);gl.uniform1f(locations.point,+pointSize.value*(devicePixelRatio||1));gl.uniform1f(locations.low,+clipLow.value);gl.uniform1f(locations.high,+clipHigh.value);gl.uniform1f(locations.opacity,+opacity.value);gl.drawArrays(gl.POINTS,0,DATA.point_count);zoomReadout.textContent=`screen half extent ${(camera.scale*DATA.scene.display_radius_cm).toExponential(3)} cm (${camera.scale.toExponential(3)} scene radii)`;requestAnimationFrame(render);}
@@ -493,7 +497,7 @@ const channel=document.getElementById('channel'),channelMeta=document.getElement
 const sceneMeta=document.getElementById('sceneMeta'),statusText=document.getElementById('status'),snapshotInput=document.getElementById('snapshot'),poseCountText=document.getElementById('poseCount');
 const resetButton=document.getElementById('reset'),fitButton=document.getElementById('fit'),rollLeftButton=document.getElementById('rollLeft'),rollRightButton=document.getElementById('rollRight');
 const zoomInButton=document.getElementById('zoomIn'),zoomOutButton=document.getElementById('zoomOut'),zoomReadout=document.getElementById('zoomReadout');
-const addPoseButton=document.getElementById('addPose'),copyPoseButton=document.getElementById('copyPose'),downloadButton=document.getElementById('download');
+const addPoseButton=document.getElementById('addPose'),copyPoseButton=document.getElementById('copyPose'),downloadButton=document.getElementById('download'),clearPosesButton=document.getElementById('clearPoses');
 const timelinePanel=document.getElementById('timeline'),pathSlider=document.getElementById('pathSlider'),pathStatus=document.getElementById('pathStatus'),playButton=document.getElementById('play'),stopButton=document.getElementById('stop');
 for(const name of Object.keys(DATA.channels)){const option=document.createElement('option');option.value=name;option.textContent=name.replaceAll('_',' ');channel.appendChild(option);} channel.value='rotational_fraction';loadChannel(channel.value);channel.onchange=()=>loadChannel(channel.value);
 document.getElementById('sceneMeta').textContent=`snapshot ${DATA.scene.snapshot ?? 'unknown'} | ${DATA.point_count.toLocaleString()} / ${DATA.scene.num_cells.toLocaleString()} cells | radius ${DATA.scene.display_radius_cm.toExponential(3)} cm | scene ${DATA.scene.sha256.slice(0,12)}`;
@@ -504,11 +508,13 @@ canvas.ondblclick=e=>{const rect=canvas.getBoundingClientRect(),aspect=canvas.wi
 function roll(angle){camera.up=rotate(camera.up,camera.forward,angle);Object.assign(camera,cleanBasis(camera.forward,camera.up));}
 resetButton.onclick=()=>setCamera(initial);fitButton.onclick=()=>{camera.target=[0,0,0];camera.scale=1.05;};rollLeftButton.onclick=()=>roll(-Math.PI/90);rollRightButton.onclick=()=>roll(Math.PI/90);
 zoomInButton.onclick=()=>{camera.scale=Math.max(1e-6,camera.scale*0.5);};zoomOutButton.onclick=()=>{camera.scale=Math.min(100,camera.scale*2);};
-function pose(){const radius=DATA.scene.display_radius_cm,center=DATA.scene.center_cm,look=V.add(center,V.scale(camera.target,radius)),half=camera.scale*radius,pos=V.sub(look,V.scale(camera.forward,4*half));return {snapshot:+snapshotInput.value,position_cm:pos,look_at_cm:look,view_direction:[...camera.forward],up:[...camera.up],screen_half_extent_cm:half};}
+function pose(){const radius=DATA.scene.display_radius_cm,center=DATA.scene.center_cm,look=V.add(center,V.scale(camera.target,radius)),half=camera.scale*radius,pos=V.sub(look,V.scale(camera.forward,4*half));return {snapshot:+snapshotInput.value,position_cm:pos,look_at_cm:look,view_direction:[...camera.forward],up:[...camera.up],screen_half_extent_cm:half,scene_sha256:DATA.scene.sha256,scene_path:DATA.scene.path};}
 function updateCount(){poseCountText.textContent=`${keyframes.length} key pose${keyframes.length===1?'':'s'}`;}
-addPoseButton.onclick=()=>{if(!snapshotInput.value){statusText.textContent='Enter a snapshot number first.';return;}const p=pose();const old=keyframes.findIndex(k=>k.snapshot===p.snapshot);if(old>=0)keyframes[old]=p;else keyframes.push(p);keyframes.sort((a,b)=>a.snapshot-b.snapshot);updateCount();statusText.textContent=`Stored pose at snapshot ${p.snapshot}.`;};
+addPoseButton.onclick=()=>{if(snapshotInput.value===''){statusText.textContent='Enter a snapshot number first.';return;}const p=pose();const old=keyframes.findIndex(k=>k.snapshot===p.snapshot);if(old>=0)keyframes[old]=p;else keyframes.push(p);keyframes.sort((a,b)=>a.snapshot-b.snapshot);const persisted=persistKeyframes();updateCount();statusText.textContent=`Stored pose at snapshot ${p.snapshot}${persisted?' for this browser session':' in memory only'}.`;};
 copyPoseButton.onclick=async()=>{await navigator.clipboard.writeText(JSON.stringify(pose(),null,2));statusText.textContent='Current pose copied.';};
 downloadButton.onclick=()=>{const payload={schema:'stellar_camera_keyframes_v001',scene:DATA.scene,keyframes};const blob=new Blob([JSON.stringify(payload,null,2)+'\n'],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='stellar_camera_keyframes.json';a.click();URL.revokeObjectURL(a.href);};
+clearPosesButton.onclick=()=>{if(keyframes.length&&confirm('Clear all saved camera key poses from this browser?')){keyframes=[];persistKeyframes();updateCount();statusText.textContent='Saved key poses cleared.';}};
+updateCount();
 timelinePanel.style.display='block';
 if(DATA.camera_path.length){pathSlider.max=DATA.camera_path.length-1;const show=i=>{const entry=DATA.camera_path[i];setCamera(entry);snapshotInput.value=entry.snapshot;pathStatus.textContent=`snapshot ${entry.snapshot} (${i+1}/${DATA.camera_path.length})`;};pathSlider.oninput=()=>show(+pathSlider.value);playButton.onclick=()=>{if(playing)return;playing=setInterval(()=>{let i=(+pathSlider.value+1)%DATA.camera_path.length;pathSlider.value=i;show(i);},50);};stopButton.onclick=()=>{clearInterval(playing);playing=null;};show(0);}else{pathSlider.disabled=true;playButton.disabled=true;stopButton.disabled=true;pathStatus.textContent='No spline is loaded. Save poses from at least two snapshots, compile them, then rebuild this viewer with --camera-path.';}
 document.onkeydown=e=>{if(e.key==='k'||e.key==='K')addPoseButton.click();if(e.code==='Space'){e.preventDefault();if(playing)stopButton.click();else if(DATA.camera_path.length)playButton.click();else statusText.textContent='Space plays a compiled path; this single-scene viewer has none loaded yet.';}if(e.key==='r'||e.key==='R')resetButton.click();};

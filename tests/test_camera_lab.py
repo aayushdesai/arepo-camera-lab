@@ -49,6 +49,8 @@ class CameraLabTest(unittest.TestCase):
             self.assertIn("Math.max(1e-6", html)
             self.assertIn("screen half extent", html)
             self.assertIn("outward_mass_flux_proxy", html)
+            self.assertIn("localStorage.setItem(KEYFRAME_STORAGE", html)
+            self.assertIn("scene_sha256:DATA.scene.sha256", html)
             self.assertEqual(status["scene_sha256"], digest)
             with self.assertRaises(ValueError):
                 state.load(scene, 721, 3000, "not-a-digest")

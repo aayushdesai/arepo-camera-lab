@@ -78,11 +78,26 @@ temperature, and velocity:
 These are exploratory color mappings, not synthetic observables. Particle ID is
 used for deterministic sampling rather than color.
 
+Magnetic and thermodynamic extensions are intentionally schema-bound. See
+[docs/physical-channels.md](docs/physical-channels.md) for useful B-field,
+pressure, entropy, and dimensionless-ratio controls and the source fields they
+require.
+
 ## Key poses and spline paths
 
 A key pose records the camera at a named simulation snapshot: look-at point,
 orientation, roll, and orthographic half extent. It does **not** load another
 snapshot and one pose does not create animation.
+
+The live server keeps saved poses in browser local storage while scenes are
+switched. Download the combined JSON regularly. The point budget controls cell
+detail only; it has no effect on the number or smoothness of spline knots.
+
+For a merger-to-outflow sequence, a useful initial authoring set is roughly nine
+unique epochs: `31, 201, 421, 561 or 641, 721, 821, 901, 957, 1016`. Choose one
+pose at each epoch. Multiple poses at the same snapshot are alternatives for
+review, because the final camera is a single-valued function of snapshot/time
+and the spline compiler rejects duplicate snapshot knots.
 
 Save poses from at least two epochs, then compile them against an existing
 21-column `v055` timeline/template:
