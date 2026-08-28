@@ -8,7 +8,7 @@ import sys
 import webbrowser
 
 from . import catalog as scene_catalog
-from . import cleanup, demo, fields, routes, server, spline, viewer, vtk_backend
+from . import cleanup, demo, fields, gallery, routes, server, spline, viewer, vtk_backend
 
 
 def _serve(args: argparse.Namespace) -> int:
@@ -144,6 +144,12 @@ def parser() -> argparse.ArgumentParser:
                                default=(820, 821),
                                metavar=("LEFT_SNAPSHOT", "RIGHT_SNAPSHOT"))
     routes_parser.set_defaults(function=_routes)
+
+    gallery_parser = commands.add_parser(
+        "capture-gallery",
+        help="Render every saved camera alternative across all physical channels")
+    gallery.add_arguments(gallery_parser)
+    gallery_parser.set_defaults(function=gallery.run)
 
     fields_parser = commands.add_parser(
         "fields", help="Build an explicit physical-field sidecar from HDF5")

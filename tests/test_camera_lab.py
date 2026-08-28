@@ -8,7 +8,7 @@ from unittest import mock
 
 import numpy as np
 
-from arepo_camera_lab import catalog, cleanup, demo, fields, routes, server, spline, viewer, vtk_backend
+from arepo_camera_lab import catalog, cleanup, demo, fields, gallery, routes, server, spline, viewer, vtk_backend
 
 
 class CameraLabTest(unittest.TestCase):
@@ -76,6 +76,9 @@ class CameraLabTest(unittest.TestCase):
             self.assertNotIn("keyframes[old]=p", html)
             self.assertIn("visible cells remain AREPO snapshot", html)
             self.assertIn("/api/pose", html)
+            self.assertIn("AREPO_CAMERA_LAB_CAPTURE", html)
+            self.assertIn("setPhysicalPose", html)
+            self.assertIn("preserveDrawingBuffer: true", html)
             self.assertEqual(status["scene_sha256"], digest)
             state.session_directory = Path(temporary) / "server-poses"
             saved_pose = state.save_pose({
@@ -387,6 +390,25 @@ class CameraLabTest(unittest.TestCase):
         decoded = vtk_backend._decode_float32(encoded, (3,))
         self.assertTrue(np.all(np.isfinite(decoded)))
         self.assertEqual(decoded[0], 1.0)
+
+    def test_gallery_range_contract_covers_all_physical_channels(self) -> None:
+        payloads = []
+        for multiplier in (1.0, 2.0):
+            payloads.append({"channels": {
+                name: {
+                    "default_low": -multiplier if name in gallery.SYMLOG_CHANNELS else multiplier,
+                    "default_high": 10.0 * multiplier,
+                    "linthresh": 0.1 * multiplier,
+                }
+                for name in gallery.PHYSICAL_CHANNELS
+            }})
+        ranges = gallery._range_settings(payloads)
+        self.assertEqual(tuple(ranges["channels"]), gallery.PHYSICAL_CHANNELS)
+        self.assertEqual(ranges["channels"]["rotational_fraction"]["low"], 0.0)
+        self.assertEqual(ranges["channels"]["rotational_fraction"]["high"], 1.0)
+        self.assertEqual(ranges["channels"]["field_velocity_alignment"]["low"], -1.0)
+        self.assertEqual(ranges["channels"]["radial_velocity"]["scale_mode"], "symlog")
+        self.assertEqual(ranges["channels"]["density"]["scale_mode"], "log10")
 
 
 if __name__ == "__main__":

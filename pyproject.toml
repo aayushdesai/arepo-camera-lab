@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "arepo-camera-lab"
-version = "0.6.0"
+version = "0.7.0"
 description = "Interactive WebGL and native VTK physical explorer for portable AREPO cell scenes"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -29,6 +29,9 @@ Repository = "https://github.com/aayushdesai/arepo-camera-lab"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+arepo_camera_lab = ["*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

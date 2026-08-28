@@ -125,6 +125,26 @@ browser and recomputed from the newly loaded arrays whenever the catalog
 snapshot changes. Unknown fields and cyclic formulas are rejected; divide by
 zero and other non-finite results are counted and hidden from the point render.
 
+### Batch-capture saved alternatives
+
+Render every no-clobber saved camera alternative through the same WebGL point
+renderer, with all 24 physical channels and one frozen copper-blue scale per
+channel:
+
+```bash
+conda run --no-capture-output -n arepo-camera-lab arepo-camera-lab capture-gallery \
+  --poses ~/Downloads/stellar_camera_poses.json \
+  --catalog ~/Movies/AREPO/arepo_camera_lab_verified_catalogs/phase21_keyframes_10epoch_da7ea20_63858030.json \
+  --output-directory ~/Movies/AREPO/camera_pose_gallery/webgl \
+  --max-points 1000000
+```
+
+The command uses the system Google Chrome in headless WebGL mode and the Node
+runtime already present on macOS. It loads one simulation epoch at a time,
+applies each exact saved physical pose bound to that epoch, and writes a PNG for
+every pose/channel pair plus checksums, exact capture-state records, frozen
+ranges, and an `index.html`. It refuses to overwrite the output directory.
+
 A completely self-contained HTML file can also be built:
 
 ```bash

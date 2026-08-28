@@ -564,6 +564,8 @@ button:hover { background: #222b33; }
 #timeline { display: none; }
 .hint { position: fixed; right: 14px; bottom: 46px; padding: 6px 8px; background: rgba(8,11,14,.78); color: #a9b6bf; font-size: 11px; }
 #visibleSnapshot { position: fixed; right: 14px; bottom: 12px; z-index: 4; padding: 7px 10px; border: 1px solid #46535e; border-radius: 4px; background: rgba(8,11,14,.92); color: #e8f1f5; font-size: 12px; font-weight: 650; }
+body.capture-mode #panel, body.capture-mode .hint, body.capture-mode #visibleSnapshot { display: none; }
+body.capture-mode #view { left: 0; width: 100vw; height: 100vh; }
 @media (max-width: 760px) { #panel { width: 290px; } #view { left: 290px; width: calc(100vw - 290px); } }
 </style>
 </head>
@@ -642,7 +644,7 @@ const DERIVED_CHANNEL_STORAGE='arepo_camera_lab_derived_channels_v001';
 const SELECTED_CHANNEL_STORAGE='arepo_camera_lab_selected_channel_v001';
 const BASE_CHANNEL_NAMES=Object.keys(DATA.channels);
 const canvas = document.getElementById('view');
-const gl = canvas.getContext('webgl', {antialias: true, alpha: false});
+const gl = canvas.getContext('webgl', {antialias: true, alpha: false, preserveDrawingBuffer: true});
 if (!gl) throw new Error('WebGL is required');
 
 function decodeFloat32(text) {
@@ -881,6 +883,36 @@ updateCount();
 timelinePanel.style.display='block';
 if(DATA.camera_path.length){pathSlider.max=DATA.camera_path.length-1;const show=i=>{const entry=DATA.camera_path[i];setCamera(entry);pathStatus.textContent=`camera path row ${entry.snapshot} (${i+1}/${DATA.camera_path.length}); visible cells remain AREPO snapshot ${DATA.scene.snapshot??'unknown'}`;};pathSlider.oninput=()=>show(+pathSlider.value);playButton.onclick=()=>{if(playing)return;playing=setInterval(()=>{let i=(+pathSlider.value+1)%DATA.camera_path.length;pathSlider.value=i;show(i);},50);};stopButton.onclick=()=>{clearInterval(playing);playing=null;};show(0);}else{pathSlider.disabled=true;playButton.disabled=true;stopButton.disabled=true;pathStatus.textContent='No spline is loaded. Save one camera pose at each of at least two different snapshots, compile them, then rebuild this viewer with --camera-path.';}
 document.onkeydown=e=>{if(e.key==='k'||e.key==='K')addPoseButton.click();if(e.code==='Space'){e.preventDefault();if(playing)stopButton.click();else if(DATA.camera_path.length)playButton.click();else statusText.textContent='Space plays a compiled path; this single-scene viewer has none loaded yet.';}if(e.key==='r'||e.key==='R')resetButton.click();};
+function setPhysicalPose(entry){
+  if(Number(entry.snapshot)!==Number(DATA.scene.snapshot))throw new Error(`Pose snapshot ${entry.snapshot} does not match visible snapshot ${DATA.scene.snapshot}.`);
+  if(String(entry.scene_sha256)!==String(DATA.scene.sha256))throw new Error('Pose scene SHA-256 does not match the visible scene.');
+  const center=DATA.scene.center_cm,radius=DATA.scene.display_radius_cm;
+  const look=entry.look_at_cm.map(Number),forward=entry.view_direction.map(Number),up=entry.up.map(Number);
+  const target=look.map((value,index)=>(value-center[index])/radius),scale=Number(entry.screen_half_extent_cm)/radius;
+  if(!Number.isFinite(scale)||scale<=0)throw new Error('Pose screen half extent must be positive and finite.');
+  setCamera({target,forward,up,scale});
+}
+function setCaptureMode(enabled){
+  document.body.classList.toggle('capture-mode',Boolean(enabled));
+  resize();
+}
+async function prepareCapture(entry,name,settings={}){
+  if(!DATA.channels[name])throw new Error(`Unknown physical channel ${name}.`);
+  setCaptureMode(true);setPhysicalPose(entry);channel.value=name;loadChannel(name);
+  palette.value=settings.palette||'copper_blue';scaleMode.value=settings.scale_mode||currentChannel.default_scale;
+  if(Number.isFinite(Number(settings.low)))setNumericValue('low',rangeLow,Number(settings.low));
+  if(Number.isFinite(Number(settings.high)))setNumericValue('high',rangeHigh,Number(settings.high));
+  if(Number.isFinite(Number(settings.linthresh)))setNumericValue('linthresh',linthresh,Number(settings.linthresh));
+  if(Number.isFinite(Number(settings.point_size)))pointSize.value=String(settings.point_size);
+  if(Number.isFinite(Number(settings.opacity)))opacity.value=String(settings.opacity);
+  if(Number.isFinite(Number(settings.gamma)))gamma.value=String(settings.gamma);
+  if(Number.isFinite(Number(settings.saturation)))saturation.value=String(settings.saturation);
+  if(Number.isFinite(Number(settings.brightness)))brightness.value=String(settings.brightness);
+  invert.checked=Boolean(settings.invert);symlogControl.style.display=scaleMode.value==='symlog'?'block':'none';updateColorBar();updateChannelMeta();
+  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));gl.finish();
+  return {schema:'arepo_camera_lab_capture_state_v001',snapshot:Number(DATA.scene.snapshot),scene_sha256:DATA.scene.sha256,pose_id:entry.pose_id??null,channel:name,palette:palette.value,scale_mode:scaleMode.value,low:rangeState.low,high:rangeState.high,linthresh:rangeState.linthresh,point_size:Number(pointSize.value),opacity:Number(opacity.value),gamma:Number(gamma.value),saturation:Number(saturation.value),brightness:Number(brightness.value),invert:invert.checked,point_count:DATA.point_count,camera_pose:pose(),canvas:{width:canvas.width,height:canvas.height}};
+}
+window.AREPO_CAMERA_LAB_CAPTURE={schema:'arepo_camera_lab_capture_api_v001',channels:[...BASE_CHANNEL_NAMES],scene:{...DATA.scene},prepare:prepareCapture,setCaptureMode};
 render();
 </script>
 </body>
