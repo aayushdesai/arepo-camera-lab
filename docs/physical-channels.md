@@ -48,4 +48,3 @@ names, unit conversions, comoving/physical state, magnetic-unit convention,
 mean molecular weight or EOS provenance, and optional composition fields. The
 resulting portable scene should record every enabled channel and formula in its
 manifest so browser colors remain reproducible.
-
