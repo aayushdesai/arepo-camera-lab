@@ -40,7 +40,8 @@ class CameraLabTest(unittest.TestCase):
             scene = Path(temporary) / "scene.bin"
             self.make_scene(scene)
             state = server.ViewerState()
-            status = state.load(scene, 721, 3000)
+            digest = viewer.sha256(scene)
+            status = state.load(scene, 721, 3000, digest)
             self.assertTrue(status["loaded"])
             self.assertEqual(status["point_count"], 3000)
             html = state.viewer_html()
@@ -48,6 +49,9 @@ class CameraLabTest(unittest.TestCase):
             self.assertIn("Math.max(1e-6", html)
             self.assertIn("screen half extent", html)
             self.assertIn("outward_mass_flux_proxy", html)
+            self.assertEqual(status["scene_sha256"], digest)
+            with self.assertRaises(ValueError):
+                state.load(scene, 721, 3000, "not-a-digest")
 
     def test_demo_scene_is_valid(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -80,4 +84,3 @@ class CameraLabTest(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

@@ -13,7 +13,7 @@ from . import demo, server, spline, viewer
 def _serve(args: argparse.Namespace) -> int:
     state = server.ViewerState()
     if args.scene is not None:
-        state.load(args.scene, args.snapshot, args.max_points)
+        state.load(args.scene, args.snapshot, args.max_points, args.scene_sha256)
     if not args.no_browser:
         webbrowser.open(f"http://127.0.0.1:{args.port}")
     server.run_server(state, args.port)
@@ -58,6 +58,8 @@ def parser() -> argparse.ArgumentParser:
     serve.add_argument("--scene", type=Path)
     serve.add_argument("--snapshot", type=int)
     serve.add_argument("--max-points", type=int, default=400_000)
+    serve.add_argument("--scene-sha256",
+                       help="Trusted manifest digest; otherwise hash the complete scene")
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--no-browser", action="store_true")
     serve.set_defaults(function=_serve)

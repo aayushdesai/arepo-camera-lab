@@ -62,12 +62,18 @@ class ViewerState:
     scene_path: Path | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
 
-    def load(self, path: Path, snapshot: int | None, max_points: int) -> dict[str, Any]:
+    def load(self, path: Path, snapshot: int | None, max_points: int,
+             scene_sha256: str | None = None) -> dict[str, Any]:
         path = path.expanduser().resolve()
         if not path.is_file():
             raise ValueError(f"scene does not exist: {path}")
         if max_points < MIN_POINTS or max_points > MAX_POINTS:
             raise ValueError(f"point budget must be in [{MIN_POINTS}, {MAX_POINTS}]")
+        if scene_sha256 is not None:
+            scene_sha256 = scene_sha256.lower()
+            if len(scene_sha256) != 64 or any(
+                    character not in "0123456789abcdef" for character in scene_sha256):
+                raise ValueError("scene SHA-256 must be 64 hexadecimal characters")
         with self.lock:
             header = viewer.read_header(path)
             cells = viewer.read_cells(path, header)
@@ -75,7 +81,7 @@ class ViewerState:
             selected = viewer.sample_cells(cells, max_points)
             payload = viewer.build_payload(
                 path, header, cells, selected, center, axis, None,
-                viewer.sha256(path), snapshot, None)
+                scene_sha256 or viewer.sha256(path), snapshot, None)
             self.payload = payload
             self.scene_path = path
             return self.status()
@@ -139,7 +145,8 @@ def _handler(state: ViewerState) -> type[BaseHTTPRequestHandler]:
                 path = Path(str(request["path"]))
                 snapshot_value = request.get("snapshot")
                 snapshot = None if snapshot_value is None else int(snapshot_value)
-                result = state.load(path, snapshot, int(request.get("max_points", 400_000)))
+                result = state.load(path, snapshot, int(request.get("max_points", 400_000)),
+                                    request.get("scene_sha256"))
                 self._json(HTTPStatus.OK, result)
             except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as error:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
@@ -160,4 +167,3 @@ def run_server(state: ViewerState, port: int) -> None:
         pass
     finally:
         server.server_close()
-

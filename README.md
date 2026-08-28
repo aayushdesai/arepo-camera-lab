@@ -30,6 +30,10 @@ arepo-camera-lab serve \
   --max-points 400000
 ```
 
+Immutable scenes with an already verified manifest digest can skip a second
+full-file hash pass by adding `--scene-sha256 <digest>`. Files loaded from the
+toolbar are hashed normally.
+
 The server listens only on `127.0.0.1`. Scene files stay on the local computer.
 The toolbar accepts another absolute scene path at any time. Point budgets from
 1,000 to 1,000,000 are supported; 400,000 is the default compromise between
@@ -118,4 +122,3 @@ python -m unittest discover -s tests -v
 
 The project uses no-clobber output behavior for generated scenes, HTML files,
 camera paths, and diagnostics.
-
