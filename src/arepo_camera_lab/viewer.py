@@ -744,7 +744,7 @@ function storedKeyframes(){
   } catch(error) { return []; }
 }
 function persistKeyframes(){try{localStorage.setItem(KEYFRAME_STORAGE,JSON.stringify(keyframes));return true;}catch(error){return false;}}
-let keyframes=storedKeyframes(), dragging=false, last=[0,0], panMode=false, playing=null;
+let keyframes=storedKeyframes(), dragging=false, last=[0,0], panMode=false, playing=null, batchCapture=false;
 function setCamera(entry) { camera.target=[...entry.target]; camera.scale=entry.scale; Object.assign(camera,cleanBasis(entry.forward,entry.up)); }
 function resize(){const ratio=devicePixelRatio||1,w=Math.floor(canvas.clientWidth*ratio),h=Math.floor(canvas.clientHeight*ratio);if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;gl.viewport(0,0,w,h);} }
 const paletteIds={copper_blue:0,viridis:1,plasma:2,magma:3,inferno:4,turbo:5,blue_red:6,grayscale:7};
@@ -760,7 +760,7 @@ function safeRange(){let low=rangeState.low,high=rangeState.high;if(scaleMode.va
 function updateColorBar(){const gradient=paletteGradients[palette.value];colorBar.style.background=`linear-gradient(90deg,${invert.checked?gradient.split(',').reverse().join(','):gradient})`;}
 function updateChannelMeta(){const [low,high]=safeRange(),invalid=currentChannel.nonfinite_count?` | ${currentChannel.nonfinite_count.toLocaleString()} invalid hidden`:'';channelMeta.textContent=`${currentChannel.label} [${currentChannel.units}] | data ${formattedNumber(currentChannel.data_min)} to ${formattedNumber(currentChannel.data_max)} | visible ${formattedNumber(low)} to ${formattedNumber(high)}${invalid}`;}
 function applyPreset(){if(rangePreset.value==='custom')return;let low,high;if(rangePreset.value==='symmetric'){const bound=Math.max(Math.abs(currentChannel.percentiles[1]),Math.abs(currentChannel.percentiles[99]));low=-bound;high=bound;}else{const [a,b]=rangePreset.value.split(',').map(Number);low=currentChannel.percentiles[a];high=currentChannel.percentiles[b];}if(scaleMode.value==='log10'&&low<=0)low=currentChannel.positive_min??1e-30;setNumericValue('low',rangeLow,low);setNumericValue('high',rangeHigh,high);updateChannelMeta();}
-function render(){resize();const [low,high]=safeRange();gl.clearColor(0.015,0.022,0.03,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.uniform3fv(locations.target,camera.target);gl.uniform3fv(locations.right,camera.right);gl.uniform3fv(locations.up,camera.up);gl.uniform3fv(locations.forward,camera.forward);gl.uniform1f(locations.scale,camera.scale);gl.uniform1f(locations.aspect,canvas.width/canvas.height);gl.uniform1f(locations.depth,4.0);gl.uniform1f(locations.point,+pointSize.value*(devicePixelRatio||1));gl.uniform1f(locations.domain_low,transformValue(low));gl.uniform1f(locations.domain_high,transformValue(high));gl.uniform1f(locations.scale_mode,scaleIds[scaleMode.value]);gl.uniform1f(locations.linthresh,Math.max(rangeState.linthresh,1e-30));gl.uniform1f(locations.opacity,+opacity.value);gl.uniform1f(locations.palette,paletteIds[palette.value]);gl.uniform1f(locations.gamma,+gamma.value);gl.uniform1f(locations.invert,invert.checked?1:0);gl.uniform1f(locations.saturation,+saturation.value);gl.uniform1f(locations.brightness,+brightness.value);gl.drawArrays(gl.POINTS,0,DATA.point_count);zoomReadout.textContent=`screen half extent ${(camera.scale*DATA.scene.display_radius_cm).toExponential(3)} cm (${camera.scale.toExponential(3)} scene radii)`;requestAnimationFrame(render);}
+function render(){resize();const [low,high]=safeRange();gl.clearColor(0.015,0.022,0.03,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.uniform3fv(locations.target,camera.target);gl.uniform3fv(locations.right,camera.right);gl.uniform3fv(locations.up,camera.up);gl.uniform3fv(locations.forward,camera.forward);gl.uniform1f(locations.scale,camera.scale);gl.uniform1f(locations.aspect,canvas.width/canvas.height);gl.uniform1f(locations.depth,4.0);gl.uniform1f(locations.point,+pointSize.value*(devicePixelRatio||1));gl.uniform1f(locations.domain_low,transformValue(low));gl.uniform1f(locations.domain_high,transformValue(high));gl.uniform1f(locations.scale_mode,scaleIds[scaleMode.value]);gl.uniform1f(locations.linthresh,Math.max(rangeState.linthresh,1e-30));gl.uniform1f(locations.opacity,+opacity.value);gl.uniform1f(locations.palette,paletteIds[palette.value]);gl.uniform1f(locations.gamma,+gamma.value);gl.uniform1f(locations.invert,invert.checked?1:0);gl.uniform1f(locations.saturation,+saturation.value);gl.uniform1f(locations.brightness,+brightness.value);gl.drawArrays(gl.POINTS,0,DATA.point_count);zoomReadout.textContent=`screen half extent ${(camera.scale*DATA.scene.display_radius_cm).toExponential(3)} cm (${camera.scale.toExponential(3)} scene radii)`;if(!batchCapture)requestAnimationFrame(render);}
 const SAFE_FUNCTION_ARITY={abs:1,sqrt:1,log10:1,ln:1,exp:1,min:2,max:2,pow:2,clip:3};
 function tokenizeDerivedExpression(source){
   const tokens=[];let index=0;
@@ -893,7 +893,7 @@ function setPhysicalPose(entry){
   setCamera({target,forward,up,scale});
 }
 function setCaptureMode(enabled){
-  document.body.classList.toggle('capture-mode',Boolean(enabled));
+  batchCapture=Boolean(enabled);document.body.classList.toggle('capture-mode',batchCapture);
   resize();
 }
 async function prepareCapture(entry,name,settings={}){
@@ -909,7 +909,7 @@ async function prepareCapture(entry,name,settings={}){
   if(Number.isFinite(Number(settings.saturation)))saturation.value=String(settings.saturation);
   if(Number.isFinite(Number(settings.brightness)))brightness.value=String(settings.brightness);
   invert.checked=Boolean(settings.invert);symlogControl.style.display=scaleMode.value==='symlog'?'block':'none';updateColorBar();updateChannelMeta();
-  await new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(resolve)));gl.finish();
+  resize();render();gl.finish();await new Promise(resolve=>requestAnimationFrame(resolve));
   return {schema:'arepo_camera_lab_capture_state_v001',snapshot:Number(DATA.scene.snapshot),scene_sha256:DATA.scene.sha256,pose_id:entry.pose_id??null,channel:name,palette:palette.value,scale_mode:scaleMode.value,low:rangeState.low,high:rangeState.high,linthresh:rangeState.linthresh,point_size:Number(pointSize.value),opacity:Number(opacity.value),gamma:Number(gamma.value),saturation:Number(saturation.value),brightness:Number(brightness.value),invert:invert.checked,point_count:DATA.point_count,camera_pose:pose(),canvas:{width:canvas.width,height:canvas.height}};
 }
 window.AREPO_CAMERA_LAB_CAPTURE={schema:'arepo_camera_lab_capture_api_v001',channels:[...BASE_CHANNEL_NAMES],scene:{...DATA.scene},prepare:prepareCapture,setCaptureMode};
