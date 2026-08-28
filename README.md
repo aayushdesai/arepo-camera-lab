@@ -110,6 +110,10 @@ normalization. For each channel you can choose linear, log10, or symmetric-log
 scaling; edit the numeric minimum and maximum; apply percentile presets; choose
 from eight color maps; invert the map; and tune gamma, saturation, brightness,
 point size, and opacity. The color range and units are shown beside the control.
+The minimum, maximum, and symmetric-log threshold use a selectable 4, 6, 8, or
+12-significant-digit display precision. This only controls formatting: focusing
+an input reveals its full stored value, and rendering retains full floating-point
+precision until the value is explicitly edited.
 
 A completely self-contained HTML file can also be built:
 
