@@ -8,7 +8,7 @@ import sys
 import webbrowser
 
 from . import catalog as scene_catalog
-from . import cleanup, demo, fields, server, spline, viewer, vtk_backend
+from . import cleanup, demo, fields, routes, server, spline, viewer, vtk_backend
 
 
 def _serve(args: argparse.Namespace) -> int:
@@ -64,8 +64,16 @@ def _build(args: argparse.Namespace) -> int:
 def _spline(args: argparse.Namespace) -> int:
     command = ["--keyframes", *[str(path) for path in args.poses],
                "--template", str(args.template), "--output", str(args.output),
-               "--diagnostics", str(args.diagnostics), "--tension", str(args.tension)]
+               "--diagnostics", str(args.diagnostics), "--tension", str(args.tension),
+               "--orientation-mode", args.orientation_mode]
     return spline.main(command)
+
+
+def _routes(args: argparse.Namespace) -> int:
+    command = ["--poses", str(args.poses),
+               "--output-directory", str(args.output_directory),
+               "--conflict", *[str(snapshot) for snapshot in args.conflict]]
+    return routes.main(command)
 
 
 def parser() -> argparse.ArgumentParser:
@@ -123,7 +131,19 @@ def parser() -> argparse.ArgumentParser:
     spline_parser.add_argument("--output", type=Path, required=True)
     spline_parser.add_argument("--diagnostics", type=Path, required=True)
     spline_parser.add_argument("--tension", type=float, default=0.25)
+    spline_parser.add_argument(
+        "--orientation-mode", choices=spline.ORIENTATION_MODES,
+        default="slerp-smootherstep")
     spline_parser.set_defaults(function=_spline)
+
+    routes_parser = commands.add_parser(
+        "routes", help="Select diagnostic and continuous routes from saved poses")
+    routes_parser.add_argument("--poses", type=Path, required=True)
+    routes_parser.add_argument("--output-directory", type=Path, required=True)
+    routes_parser.add_argument("--conflict", type=int, nargs=2,
+                               default=(820, 821),
+                               metavar=("LEFT_SNAPSHOT", "RIGHT_SNAPSHOT"))
+    routes_parser.set_defaults(function=_routes)
 
     fields_parser = commands.add_parser(
         "fields", help="Build an explicit physical-field sidecar from HDF5")

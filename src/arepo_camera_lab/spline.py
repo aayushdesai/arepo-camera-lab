@@ -24,6 +24,7 @@ import numpy as np
 
 SCHEMA = "stellar_camera_keyframes_v001"
 PATH_COLUMNS = 21
+ORIENTATION_MODES = ("squad", "slerp-smootherstep")
 
 
 def _normalize(vector: np.ndarray, name: str) -> np.ndarray:
@@ -276,7 +277,11 @@ def read_keyframe_files(paths: list[Path]) -> list[dict]:
 
 
 def compile_spline(template_rows: list[list[float]], keyframes: list[dict],
-                   tension: float) -> tuple[list[list[float]], list[dict]]:
+                   tension: float,
+                   orientation_mode: str = "squad") -> tuple[list[list[float]], list[dict]]:
+    if orientation_mode not in ORIENTATION_MODES:
+        raise ValueError(
+            f"orientation mode must be one of {', '.join(ORIENTATION_MODES)}")
     x = np.asarray([float(keyframe["snapshot"]) for keyframe in keyframes])
     look = np.asarray([keyframe["look_at_cm"] for keyframe in keyframes],
                       dtype=float)
@@ -320,8 +325,13 @@ def compile_spline(template_rows: list[list[float]], keyframes: list[dict],
             np.asarray(scale_tangents[index]),
             np.asarray(scale_tangents[index + 1]), snapshot))
         half_extent = math.exp(log_half_extent)
-        quaternion = _squad(quaternions[index], quaternions[index + 1],
-                            controls[index], controls[index + 1], fraction)
+        if orientation_mode == "squad":
+            quaternion = _squad(quaternions[index], quaternions[index + 1],
+                                controls[index], controls[index + 1], fraction)
+        else:
+            eased_fraction = fraction * fraction * (3.0 - 2.0 * fraction)
+            quaternion = _slerp(
+                quaternions[index], quaternions[index + 1], eased_fraction)
         basis = _quat_to_matrix(quaternion)
         forward = _normalize(-basis[:, 2], "interpolated view")
         up = _normalize(basis[:, 1], "interpolated up")
@@ -367,7 +377,9 @@ def write_path(path: Path, rows: list[list[float]], provenance: dict) -> None:
     with path.open("x", encoding="utf-8") as handle:
         handle.write("# schema=stellar_camera_path_v055\n")
         handle.write("# generated_by=stellar_camera_spline.py\n")
-        handle.write("# interpolation=catmull_hermite_target,squad_orientation,pchip_log_scale\n")
+        handle.write("# interpolation=catmull_hermite_target,"
+                     f"{provenance['orientation_mode']}_orientation,"
+                     "pchip_log_scale\n")
         handle.write(f"# keyframes_sha256={provenance['keyframes_sha256']}\n")
         handle.write(f"# template_sha256={provenance['template_sha256']}\n")
         for row in rows:
@@ -412,16 +424,22 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--diagnostics", type=Path, required=True)
     parser.add_argument("--tension", type=float, default=0.25,
                         help="Look-at spline tension in [0,1]; larger is more restrained")
+    parser.add_argument(
+        "--orientation-mode", choices=ORIENTATION_MODES,
+        default="slerp-smootherstep",
+        help="Shortest-arc eased SLERP avoids SQUAD overshoot for large pose changes")
     args = parser.parse_args(argv)
     if not 0.0 <= args.tension <= 1.0:
         parser.error("--tension must lie in [0,1]")
     try:
         keyframes = read_keyframe_files(args.keyframes)
         template = read_template(args.template)
-        rows, diagnostics = compile_spline(template, keyframes, args.tension)
+        rows, diagnostics = compile_spline(
+            template, keyframes, args.tension, args.orientation_mode)
         provenance = {
             "keyframes_sha256": keyframe_bundle_sha256(args.keyframes),
             "template_sha256": sha256(args.template),
+            "orientation_mode": args.orientation_mode,
         }
         write_path(args.output, rows, provenance)
         write_diagnostics(args.diagnostics, diagnostics)

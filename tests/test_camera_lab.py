@@ -8,7 +8,7 @@ from unittest import mock
 
 import numpy as np
 
-from arepo_camera_lab import catalog, cleanup, demo, fields, server, spline, viewer, vtk_backend
+from arepo_camera_lab import catalog, cleanup, demo, fields, routes, server, spline, viewer, vtk_backend
 
 
 class CameraLabTest(unittest.TestCase):
@@ -198,6 +198,70 @@ class CameraLabTest(unittest.TestCase):
                 paths.append(path)
             merged = spline.read_keyframe_files(paths)
             self.assertEqual([row["snapshot"] for row in merged], [31, 721])
+
+    def test_route_selection_preserves_source_and_omits_conflict(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "poses.json"
+            alternatives = []
+            latest = []
+            for snapshot in (31, 820, 821, 1016):
+                for index, direction in enumerate(((0.0, 0.0, -1.0),
+                                                    (0.0, -1.0, 0.0))):
+                    pose = {
+                        "snapshot": snapshot,
+                        "look_at_cm": [float(snapshot), 0.0, 0.0],
+                        "view_direction": list(direction),
+                        "up": [0.0, 1.0, 0.0] if index == 0 else [0.0, 0.0, 1.0],
+                        "screen_half_extent_cm": float(snapshot + 1),
+                        "pose_id": f"{snapshot}-{index}",
+                        "saved_at": f"2026-01-01T00:00:0{index}Z",
+                    }
+                    alternatives.append(pose)
+                latest.append(alternatives[-1])
+            source.write_text(json.dumps({
+                "schema": spline.SCHEMA,
+                "keyframes": latest,
+                "alternatives": alternatives,
+            }), encoding="utf-8")
+            before = source.read_bytes()
+            report = routes.write_routes(source, root / "routes", (820, 821))
+            self.assertEqual(source.read_bytes(), before)
+            self.assertEqual(report["alternative_pose_count"], 8)
+            self.assertEqual(len(report["routes"]), 3)
+            drop_820 = json.loads((
+                root / "routes/continuous_drop_820.json").read_text())
+            drop_821 = json.loads((
+                root / "routes/continuous_drop_821.json").read_text())
+            self.assertNotIn(820, [row["snapshot"] for row in drop_820["keyframes"]])
+            self.assertNotIn(821, [row["snapshot"] for row in drop_821["keyframes"]])
+            self.assertTrue((root / "routes/route_transition_diagnostics.tsv").is_file())
+
+    def test_eased_slerp_avoids_squad_large_pose_overshoot(self) -> None:
+        template = []
+        for snapshot in range(0, 101):
+            template.append([
+                float(snapshot), float(snapshot),
+                0.0, 0.0, -4.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0])
+        keyframes = [{
+            "snapshot": 0,
+            "look_at_cm": [0.0, 0.0, 0.0],
+            "view_direction": [0.0, 0.0, 1.0],
+            "up": [0.0, 1.0, 0.0],
+            "screen_half_extent_cm": 1.0,
+        }, {
+            "snapshot": 100,
+            "look_at_cm": [0.0, 0.0, 0.0],
+            "view_direction": [1.0, 0.0, 0.0],
+            "up": [0.0, 1.0, 0.0],
+            "screen_half_extent_cm": 1.0,
+        }]
+        _, diagnostics = spline.compile_spline(
+            template, keyframes, 0.25, "slerp-smootherstep")
+        self.assertLess(
+            max(row["orientation_deg_per_frame"] for row in diagnostics),
+            1.5)
 
     def test_native_vtk_data_and_pose_contract(self) -> None:
         from types import SimpleNamespace

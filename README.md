@@ -216,6 +216,21 @@ initial knot epochs are roughly `31, 201, 421, 561 or 641, 721, 821, 901, 957,
 final camera is a single-valued function of snapshot/time and the compiler
 rejects duplicate knot indices.
 
+For a bundle with several alternatives, first create reviewable route inputs
+without changing the downloaded file:
+
+```bash
+arepo-camera-lab routes \
+  --poses stellar_camera_poses.json \
+  --output-directory camera-routes \
+  --conflict 820 821
+```
+
+The route command preserves the exact latest-pose sequence as a diagnostic and
+writes two smoothest continuous candidates, one omitting snapshot 820 and one
+omitting snapshot 821. This makes an incompatible adjacent-pose choice explicit
+instead of hiding a large one-frame spin inside a nominally smooth spline.
+
 Save poses from at least two epochs, then compile them against an existing
 21-column `v055` timeline/template:
 
@@ -227,9 +242,12 @@ arepo-camera-lab spline \
   --diagnostics camera_spline_diagnostics.tsv
 ```
 
-The compiler uses a cubic Hermite spline for the look-at point, quaternion
-SQUAD for orientation, and a shape-preserving log-space spline for zoom. This
-produces a continuously moving camera rather than a hard cut.
+The compiler uses a cubic Hermite spline for the look-at point, shortest-arc
+eased quaternion SLERP for orientation, and a shape-preserving log-space spline
+for zoom. The eased SLERP stops cleanly at a reviewed knot and cannot introduce
+the large SQUAD overshoot that is possible between widely separated poses.
+`--orientation-mode squad` remains available for closely spaced poses. Both
+modes produce a continuously moving camera rather than a hard cut.
 
 ## Scene format
 
