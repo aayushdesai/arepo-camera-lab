@@ -1,0 +1,18 @@
+{
+  "schema": "arepo_camera_lab_catalog_v001",
+  "required_auxiliary_fields": [
+    "magnetic_field_gauss",
+    "pressure_dyn_cm2",
+    "sound_speed_cm_s"
+  ],
+  "frames": [
+    {
+      "snapshot": 721,
+      "label": "disk formation",
+      "scene_source": "user@login.example:/cluster/scenes/snapshot_0721/scene_v052.bin",
+      "scene_sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+      "field_sidecar_source": "user@login.example:/cluster/fields/snapshot_0721.fields.npz",
+      "field_sidecar_sha256": "abcdef0123456789abcdef0123456789abcdef0123456789abcdef0123456789"
+    }
+  ]
+}

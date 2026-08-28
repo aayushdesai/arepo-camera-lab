@@ -6,11 +6,15 @@ from dataclasses import dataclass, field
 from http import HTTPStatus
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import math
 from pathlib import Path
 import threading
 from typing import Any
 
 from . import viewer
+from .catalog import SceneCatalog
+from .cleanup import CachedInput
+from .transfer import acquire_verified_file
 
 
 MIN_POINTS = 1_000
@@ -26,34 +30,43 @@ APP_HTML = r'''<!doctype html>
 :root { color-scheme: dark; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 * { box-sizing: border-box; }
 body { margin: 0; background: #090c10; color: #e9eef2; overflow: hidden; }
-header { height: 104px; display: grid; grid-template-columns: minmax(260px,1fr) 106px 162px 92px; grid-template-rows: 38px 38px; gap: 8px; align-items: center; padding: 10px 12px; border-bottom: 1px solid #303842; background: #12171d; }
-input, button { height: 38px; min-width: 0; border: 1px solid #3d4853; border-radius: 4px; background: #181f26; color: #eef3f6; padding: 0 10px; }
+header { height: 104px; display: grid; grid-template-columns: 180px minmax(260px,1fr) 150px 92px 122px; grid-template-rows: 38px 38px; gap: 8px; align-items: center; padding: 10px 12px; border-bottom: 1px solid #303842; background: #12171d; }
+input, select, button { height: 38px; min-width: 0; border: 1px solid #3d4853; border-radius: 4px; background: #181f26; color: #eef3f6; padding: 0 10px; }
 button { cursor: pointer; font-weight: 650; }
 button:hover { background: #242d35; }
 #fields { grid-column: 1 / -1; }
 #statusBand { position: fixed; top: 104px; left: 0; right: 0; z-index: 2; height: 28px; display: grid; grid-template-columns: 1fr 220px; gap: 12px; align-items: center; padding: 4px 12px; background: rgba(8,11,14,.94); color: #a9bac5; font-size: 11px; }
 #progress { width: 100%; height: 9px; accent-color: #62a8cf; }
 iframe { position: fixed; top: 132px; left: 0; width: 100vw; height: calc(100vh - 132px); border: 0; background: #07090c; }
+#visibleData { position: fixed; right: 14px; bottom: 12px; z-index: 4; padding: 7px 10px; border: 1px solid #46535e; border-radius: 4px; background: rgba(8,11,14,.92); color: #e8f1f5; font-size: 12px; font-weight: 650; }
+#visibleData.offline { border-color: #8a4c4c; color: #ffc7c7; }
 @media (max-width: 850px) { header { height: 152px; grid-template-columns: 1fr 1fr; grid-template-rows: 38px 38px 38px; } #scene, #fields { grid-column: 1 / -1; } #statusBand { top: 152px; } iframe { top: 180px; height: calc(100vh - 180px); } }
 </style>
 </head>
 <body>
 <header>
-  <input id="scene" aria-label="Portable v052 scene path" placeholder="/absolute/path/to/scene_v052.bin">
-  <input id="snapshot" aria-label="AREPO snapshot index" type="number" min="0" placeholder="AREPO output index">
+  <select id="snapshot" aria-label="Available AREPO snapshots" title="Only hash-bound simulation outputs with complete physical-field sidecars are listed"><option value="">No catalog loaded</option></select>
+  <input id="scene" aria-label="Loaded portable v052 scene path" readonly placeholder="verified cached scene path appears here">
   <input id="points" aria-label="Cell point budget; zero loads all cells" type="number" min="0" step="10000" value="400000" placeholder="points; 0 = all cells">
-  <button id="load">Load scene</button>
-  <input id="fields" aria-label="Optional physical-field sidecar" placeholder="optional /absolute/path/to/snapshot.fields.npz for B, pressure, entropy">
+  <button id="load">Load selected</button>
+  <button id="archive" title="Checksum-upload pose outputs, verify cluster sources, remove local cache, and stop the server" disabled>Archive &amp; close</button>
+  <input id="fields" aria-label="Loaded physical-field sidecar path" readonly placeholder="verified physical-field sidecar path appears here">
 </header>
-<div id="statusBand"><span id="status">Enter a portable v052 full-cell scene path. Files stay on this computer.</span><progress id="progress" max="1" value="0"></progress></div>
+<div id="statusBand"><span id="status">Loading the verified snapshot catalog...</span><progress id="progress" max="1" value="0"></progress></div>
 <iframe id="viewer" title="Interactive AREPO camera viewer" src="/viewer"></iframe>
+<div id="visibleData" class="offline">VISIBLE DATA: NOT LOADED</div>
 <script>
-const scene=document.getElementById('scene'),fields=document.getElementById('fields'),snapshot=document.getElementById('snapshot'),points=document.getElementById('points'),status=document.getElementById('status'),progress=document.getElementById('progress'),frame=document.getElementById('viewer'),load=document.getElementById('load');
+const scene=document.getElementById('scene'),fields=document.getElementById('fields'),snapshot=document.getElementById('snapshot'),points=document.getElementById('points'),status=document.getElementById('status'),progress=document.getElementById('progress'),frame=document.getElementById('viewer'),load=document.getElementById('load'),archive=document.getElementById('archive'),visibleData=document.getElementById('visibleData');
+const LAST_STATUS='arepo_camera_lab_last_server_status_v001';
 let displayedRevision=-1;
-async function refresh(){try{const response=await fetch('/api/status',{cache:'no-store'}),data=await response.json();load.disabled=Boolean(data.loading);progress.value=data.progress??0;if(data.loading){status.textContent=`${data.message} (${Math.round((data.progress??0)*100)}%)`;return;}if(data.error){status.textContent='Load failed: '+data.error;return;}if(data.loaded){scene.value=data.scene_path;fields.value=data.field_sidecar_path??'';snapshot.value=data.snapshot??'';points.value=data.requested_points===0?0:data.point_count;status.textContent=`Ready: ${data.point_count.toLocaleString()} of ${data.num_cells.toLocaleString()} cells from AREPO snapshot index ${data.snapshot??'unknown'}${data.field_sidecar_path?' with auxiliary fields':''}.`;progress.value=1;if(data.revision!==displayedRevision){displayedRevision=data.revision;frame.src='/viewer?revision='+data.revision;}}}catch(error){status.textContent='Status error: '+error.message;}}
-load.onclick=async()=>{load.disabled=true;status.textContent='Queueing scene load...';progress.value=0;try{const response=await fetch('/api/load',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:scene.value,field_sidecar:fields.value||null,snapshot:snapshot.value===''?null:+snapshot.value,max_points:+points.value})}),data=await response.json();if(!response.ok)throw new Error(data.error||'load failed');}catch(error){status.textContent='Load failed: '+error.message;load.disabled=false;}};
-scene.onkeydown=e=>{if(e.key==='Enter')load.click();};
-refresh();setInterval(refresh,400);
+function remember(data){try{sessionStorage.setItem(LAST_STATUS,JSON.stringify(data));}catch(error){}}
+function lastStatus(){try{return JSON.parse(sessionStorage.getItem(LAST_STATUS)||'null');}catch(error){return null;}}
+function showVisible(data){const index=data.snapshot??'UNKNOWN';visibleData.textContent=`VISIBLE DATA: AREPO SNAPSHOT ${index} | ${Number(data.point_count).toLocaleString()} CELLS`;visibleData.classList.remove('offline');}
+async function loadCatalog(){try{const response=await fetch('/api/catalog',{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);const data=await response.json();snapshot.replaceChildren();for(const entry of data.frames){const option=document.createElement('option');option.value=entry.snapshot;option.textContent=`${entry.snapshot} | ${entry.label}`;option.dataset.scene=entry.scene_source;option.dataset.fields=entry.field_sidecar_source;snapshot.appendChild(option);}snapshot.disabled=data.frames.length===0;load.disabled=data.frames.length===0;if(data.frames.length===0)status.textContent='No verified snapshot catalog is configured.';}catch(error){snapshot.disabled=true;load.disabled=true;}}
+async function refresh(){try{const response=await fetch('/api/status',{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);const data=await response.json();load.disabled=Boolean(data.loading)||snapshot.options.length===0;archive.disabled=!data.cleanup_configured||Boolean(data.loading);progress.value=data.progress??0;if(data.loading){status.textContent=`${data.message} (${Math.round((data.progress??0)*100)}%)`;return;}if(data.error){status.textContent='Load failed: '+data.error;return;}if(data.loaded){scene.value=data.scene_path;fields.value=data.field_sidecar_path??'';snapshot.value=String(data.snapshot??'');points.value=data.requested_points===0?0:data.point_count;status.textContent=`Ready: ${data.point_count.toLocaleString()} of ${data.num_cells.toLocaleString()} cells from AREPO snapshot ${data.snapshot??'unknown'} | ${data.scene_path}`;progress.value=1;showVisible(data);remember(data);if(data.revision!==displayedRevision){displayedRevision=data.revision;frame.src='/viewer?revision='+data.revision;}}}catch(error){const previous=lastStatus();if(previous&&previous.loaded){scene.value=previous.scene_path??'';fields.value=previous.field_sidecar_path??'';}load.disabled=true;archive.disabled=true;visibleData.classList.add('offline');visibleData.textContent=previous&&previous.loaded?`SERVER OFFLINE | LAST VISIBLE SNAPSHOT ${previous.snapshot??'UNKNOWN'}`:'LOCAL SERVER OFFLINE | VISIBLE DATA UNKNOWN';status.textContent=`Local camera-lab server unavailable. This control page must be opened from http://127.0.0.1, not as a file. Start 'arepo-camera-lab serve ...', open the printed URL, and refresh. (${error.message})`;}}
+load.onclick=async()=>{if(snapshot.value==='')return;load.disabled=true;status.textContent=`Queueing verified AREPO snapshot ${snapshot.value}...`;progress.value=0;try{const response=await fetch('/api/load',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({snapshot:+snapshot.value,max_points:+points.value})}),data=await response.json();if(!response.ok)throw new Error(data.error||'load failed');}catch(error){status.textContent='Load failed: '+error.message;load.disabled=false;}};
+archive.onclick=async()=>{archive.disabled=true;load.disabled=true;status.textContent='Stopping the server; verified rsync archive and cache cleanup continue in the terminal...';try{const response=await fetch('/api/shutdown',{method:'POST'});if(!response.ok)throw new Error(`HTTP ${response.status}`);}catch(error){status.textContent=`Could not start archive: ${error.message}`;archive.disabled=false;}};
+loadCatalog().then(refresh);setInterval(refresh,400);
 </script>
 </body>
 </html>'''
@@ -70,6 +83,13 @@ class ViewerState:
         "loaded": False, "loading": False, "progress": 0.0,
         "message": "Waiting for a scene", "error": None, "revision": 0})
     worker: threading.Thread | None = None
+    catalog: SceneCatalog | None = None
+    cache_directory: Path = field(
+        default_factory=lambda: Path.home() / ".cache/arepo-camera-lab")
+    session_directory: Path = field(
+        default_factory=lambda: Path.home() / ".local/share/arepo-camera-lab/session")
+    cached_inputs: dict[Path, CachedInput] = field(default_factory=dict)
+    cleanup_configured: bool = False
 
     @staticmethod
     def _validate_request(path: Path, max_points: int,
@@ -165,9 +185,68 @@ class ViewerState:
         self.worker.start()
         return queued
 
+    def start_catalog_load(self, snapshot: int, max_points: int) -> dict[str, Any]:
+        if self.catalog is None:
+            raise ValueError("no snapshot catalog is configured")
+        try:
+            frame = self.catalog.frames[int(snapshot)]
+        except KeyError as error:
+            raise ValueError(f"snapshot {snapshot} is not in the verified catalog") from error
+        with self.lock:
+            if self.progress.get("loading"):
+                raise ValueError("another scene load is already in progress")
+            self.progress.update({
+                "loading": True, "progress": 0.0,
+                "message": f"Queueing verified snapshot {snapshot}", "error": None,
+                "requested_points": max_points, "requested_snapshot": snapshot,
+            })
+            queued = dict(self.progress)
+
+        def work() -> None:
+            try:
+                self._phase(0.01, f"Rsyncing scene for snapshot {snapshot}")
+                scene_path, _ = acquire_verified_file(
+                    frame.scene_source, frame.scene_sha256,
+                    self.cache_directory / "scenes")
+                self._phase(0.04, f"Rsyncing physical fields for snapshot {snapshot}")
+                sidecar_path, _ = acquire_verified_file(
+                    frame.field_sidecar_source, frame.field_sidecar_sha256,
+                    self.cache_directory / "fields")
+                sidecar = viewer.read_field_sidecar(sidecar_path)
+                actual_fields = set(sidecar["fields"])
+                required_fields = set(self.catalog.required_auxiliary_fields)
+                missing = sorted(required_fields - actual_fields)
+                extra = sorted(actual_fields - required_fields)
+                if missing or extra:
+                    raise ValueError(
+                        f"snapshot {snapshot} sidecar field contract mismatch; "
+                        f"missing={missing}, extra={extra}")
+                with self.lock:
+                    self.cached_inputs[scene_path] = CachedInput(
+                        scene_path, frame.scene_source, frame.scene_sha256)
+                    self.cached_inputs[sidecar_path] = CachedInput(
+                        sidecar_path, frame.field_sidecar_source,
+                        frame.field_sidecar_sha256)
+                self.load(scene_path, snapshot, max_points, frame.scene_sha256,
+                          sidecar_path)
+            except Exception as error:
+                with self.lock:
+                    self.progress.update({
+                        "loading": False, "error": str(error),
+                        "message": f"Snapshot {snapshot} load failed",
+                    })
+
+        self.worker = threading.Thread(
+            target=work, name=f"arepo-camera-catalog-loader-{snapshot}",
+            daemon=True)
+        self.worker.start()
+        return queued
+
     def status(self) -> dict[str, Any]:
         with self.lock:
             result = dict(self.progress)
+            result["cleanup_configured"] = self.cleanup_configured
+            result["session_directory"] = str(self.session_directory)
             if self.payload is not None:
                 scene = self.payload["scene"]
                 result.update({
@@ -180,6 +259,49 @@ class ViewerState:
                         if self.field_sidecar_path is not None else None,
                 })
             return result
+
+    def catalog_payload(self) -> dict[str, Any]:
+        if self.catalog is None:
+            return {"schema": None, "required_auxiliary_fields": [], "frames": []}
+        return self.catalog.public_payload()
+
+    def save_pose(self, pose: dict[str, Any]) -> Path:
+        with self.lock:
+            if self.payload is None:
+                raise ValueError("no scene is loaded")
+            scene = dict(self.payload["scene"])
+        snapshot = int(pose["snapshot"])
+        if snapshot != scene["snapshot"]:
+            raise ValueError(
+                f"pose snapshot {snapshot} does not match visible snapshot "
+                f"{scene['snapshot']}")
+        if str(pose.get("scene_sha256")) != str(scene["sha256"]):
+            raise ValueError("pose scene SHA-256 does not match the visible scene")
+        for name, length in (("position_cm", 3), ("look_at_cm", 3),
+                             ("view_direction", 3), ("up", 3)):
+            values = pose.get(name)
+            if not isinstance(values, list) or len(values) != length or not all(
+                    math.isfinite(float(value)) for value in values):
+                raise ValueError(f"pose {name} must contain {length} finite values")
+        if not math.isfinite(float(pose.get("screen_half_extent_cm", 0.0))) or \
+                float(pose["screen_half_extent_cm"]) <= 0.0:
+            raise ValueError("pose screen_half_extent_cm must be positive and finite")
+        directory = self.session_directory.expanduser().resolve()
+        directory.mkdir(parents=True, exist_ok=True)
+        for index in range(1, 10000):
+            path = directory / f"camera_pose_snapshot_{snapshot:04d}_{index:03d}.json"
+            if path.exists():
+                continue
+            payload = {
+                "schema": "stellar_camera_keyframes_v001",
+                "scene": scene,
+                "keyframes": [pose],
+            }
+            with path.open("x", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, allow_nan=False)
+                handle.write("\n")
+            return path
+        raise FileExistsError("camera-pose numbering is exhausted")
 
     def viewer_html(self) -> str:
         with self.lock:
@@ -213,26 +335,48 @@ def _handler(state: ViewerState) -> type[BaseHTTPRequestHandler]:
                 self._send(HTTPStatus.OK, state.viewer_html().encode("utf-8"), "text/html; charset=utf-8")
             elif route == "/api/status":
                 self._json(HTTPStatus.OK, state.status())
+            elif route == "/api/catalog":
+                self._json(HTTPStatus.OK, state.catalog_payload())
             else:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
         def do_POST(self) -> None:  # noqa: N802
-            if self.path != "/api/load":
+            if self.path not in ("/api/load", "/api/pose", "/api/shutdown"):
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
                 return
             try:
+                if self.path == "/api/shutdown":
+                    if not state.cleanup_configured:
+                        raise ValueError(
+                            "restart the server with --cleanup-on-close and a "
+                            "unique --sync-back-destination")
+                    self._json(HTTPStatus.ACCEPTED, {"status": "archive_queued"})
+                    threading.Thread(
+                        target=self.server.shutdown,
+                        name="arepo-camera-server-shutdown", daemon=True).start()
+                    return
                 length = int(self.headers.get("Content-Length", "0"))
                 if length <= 0 or length > 1_000_000:
                     raise ValueError("invalid request size")
                 request = json.loads(self.rfile.read(length))
-                path = Path(str(request["path"]))
+                if self.path == "/api/pose":
+                    path = state.save_pose(request)
+                    self._json(HTTPStatus.CREATED, {"path": str(path)})
+                    return
                 snapshot_value = request.get("snapshot")
                 snapshot = None if snapshot_value is None else int(snapshot_value)
-                result = state.start_load(
-                    path, snapshot, int(request.get("max_points", 400_000)),
-                    request.get("scene_sha256"),
-                    Path(str(request["field_sidecar"]))
-                    if request.get("field_sidecar") else None)
+                if state.catalog is not None:
+                    if snapshot is None:
+                        raise ValueError("select a catalog snapshot before loading")
+                    result = state.start_catalog_load(
+                        snapshot, int(request.get("max_points", 400_000)))
+                else:
+                    path = Path(str(request["path"]))
+                    result = state.start_load(
+                        path, snapshot, int(request.get("max_points", 400_000)),
+                        request.get("scene_sha256"),
+                        Path(str(request["field_sidecar"]))
+                        if request.get("field_sidecar") else None)
                 self._json(HTTPStatus.ACCEPTED, result)
             except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as error:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})

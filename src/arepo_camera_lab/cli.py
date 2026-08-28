@@ -7,17 +7,34 @@ from pathlib import Path
 import sys
 import webbrowser
 
-from . import demo, fields, server, spline, viewer, vtk_backend
+from . import catalog as scene_catalog
+from . import cleanup, demo, fields, server, spline, viewer, vtk_backend
 
 
 def _serve(args: argparse.Namespace) -> int:
     state = server.ViewerState()
-    if args.scene is not None:
+    state.session_directory = args.session_directory.expanduser().resolve()
+    state.cleanup_configured = bool(args.cleanup_on_close)
+    if args.cleanup_on_close and (
+            args.catalog is None or args.sync_back_destination is None):
+        raise ValueError(
+            "serve --cleanup-on-close requires --catalog and a unique "
+            "--sync-back-destination")
+    if args.catalog is not None:
+        state.catalog = scene_catalog.load_catalog(args.catalog)
+        state.cache_directory = args.cache_directory.expanduser().resolve()
+        selected = args.snapshot if args.snapshot is not None else min(state.catalog.frames)
+        state.start_catalog_load(selected, args.max_points)
+    elif args.scene is not None:
         state.start_load(args.scene, args.snapshot, args.max_points,
                          args.scene_sha256, args.field_sidecar)
     if not args.no_browser:
         webbrowser.open(f"http://127.0.0.1:{args.port}")
     server.run_server(state, args.port)
+    if args.cleanup_on_close:
+        cleanup.archive_and_cleanup(
+            state.session_directory, args.sync_back_destination,
+            list(state.cached_inputs.values()))
     return 0
 
 
@@ -58,7 +75,11 @@ def parser() -> argparse.ArgumentParser:
     commands = result.add_subparsers(dest="command", required=True)
 
     serve = commands.add_parser("serve", help="Start the local live-loading viewer")
-    serve.add_argument("--scene", type=Path)
+    serve_source = serve.add_mutually_exclusive_group(required=True)
+    serve_source.add_argument("--scene", type=Path)
+    serve_source.add_argument(
+        "--catalog", type=Path,
+        help="Verified snapshot catalog; only complete scene/field pairs become selectable")
     serve.add_argument("--snapshot", type=int)
     serve.add_argument("--max-points", type=int, default=400_000,
                        help="Cell points to display; zero loads every cell")
@@ -66,7 +87,21 @@ def parser() -> argparse.ArgumentParser:
                        help="Trusted manifest digest; otherwise hash the complete scene")
     serve.add_argument("--field-sidecar", type=Path,
                        help="Optional ID-bound NPZ with B, pressure, entropy, or sound speed")
+    serve.add_argument(
+        "--cache-directory", type=Path,
+        default=Path.home() / ".cache/arepo-camera-lab",
+        help="Content-addressed rsync cache used by catalog entries")
     serve.add_argument("--port", type=int, default=8765)
+    serve.add_argument(
+        "--session-directory", type=Path,
+        default=Path.home() / ".local/share/arepo-camera-lab/session",
+        help="No-clobber server-side camera-pose output directory")
+    serve.add_argument(
+        "--cleanup-on-close", action="store_true",
+        help="Enable the Archive & close button and cleanup after server exit")
+    serve.add_argument(
+        "--sync-back-destination",
+        help="Unique no-clobber host:/path for session pose outputs")
     serve.add_argument("--no-browser", action="store_true")
     serve.set_defaults(function=_serve)
 
@@ -99,6 +134,11 @@ def parser() -> argparse.ArgumentParser:
         "vtk", help="Open the native VTK full-cell physics explorer")
     vtk_backend.add_arguments(vtk_parser)
     vtk_parser.set_defaults(function=vtk_backend.run)
+
+    cleanup_parser = commands.add_parser(
+        "cleanup", help="Rsync session outputs to a no-clobber cluster path and remove verified cache files")
+    cleanup.add_arguments(cleanup_parser)
+    cleanup_parser.set_defaults(function=cleanup.run)
 
     demo_parser = commands.add_parser("demo", help="Generate and open a synthetic disk/outflow scene")
     demo_parser.add_argument("--output", type=Path, default=Path("arepo-camera-lab-demo-v052.bin"))

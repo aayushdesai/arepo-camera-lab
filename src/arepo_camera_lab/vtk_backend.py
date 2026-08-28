@@ -15,12 +15,13 @@ import math
 import os
 from pathlib import Path
 import shutil
-import subprocess
 from typing import Any
 
 import numpy as np
 
+from . import cleanup as session_cleanup
 from . import viewer
+from .transfer import acquire_verified_file
 
 
 PALETTE_STOPS = {
@@ -113,43 +114,13 @@ def cache_scene_file(scene: Path, expected_sha256: str | None,
 def rsync_scene_file(source: str, expected_sha256: str,
                      directory: Path) -> tuple[Path, str]:
     """Fetch one scene with resumable rsync and verify its trusted digest."""
-    expected = expected_sha256.lower()
-    if len(expected) != 64 or any(character not in "0123456789abcdef"
-                                  for character in expected):
-        raise ValueError("--rsync-scene requires a 64-character --scene-sha256")
-    directory = directory.expanduser().resolve()
-    directory.mkdir(parents=True, exist_ok=True)
-    remote_path = source.split(":", 1)[-1]
-    source_name = Path(remote_path).name or "scene_v052.bin"
-    stem = Path(source_name).stem
-    suffix = Path(source_name).suffix or ".bin"
-    cached = directory / f"{stem}_{expected[:16]}{suffix}"
-    if cached.is_file():
-        actual = viewer.sha256(cached)
-        if actual != expected:
-            raise ValueError(f"cached scene digest mismatch: {cached}")
-        print(f"[rsync] Reusing verified cache: {cached}", flush=True)
-        return cached, expected
-
-    partial = directory / f".{stem}_{expected[:16]}.rsync-partial"
-    print(f"[rsync] Fetching one requested scene: {source}", flush=True)
-    command = [
-        "rsync", "-a", "--info=progress2", "--partial", "--append-verify",
-        source, str(partial),
-    ]
-    completed = subprocess.run(command, check=False)
-    if completed.returncode != 0:
-        raise OSError(
-            f"rsync failed with exit code {completed.returncode}; resumable partial "
-            f"is preserved at {partial}")
-    actual = viewer.sha256(partial)
-    if actual != expected:
-        raise ValueError(
-            f"rsynced scene digest {actual} does not match expected {expected}; "
-            f"untrusted file is preserved at {partial}")
-    os.replace(partial, cached)
-    print(f"[rsync] Verified cache ready: {cached}", flush=True)
-    return cached, expected
+    try:
+        return acquire_verified_file(source, expected_sha256, directory)
+    except ValueError as error:
+        if "SHA-256" in str(error):
+            raise ValueError(
+                "--rsync-scene requires a 64-character --scene-sha256") from error
+        raise
 
 
 def _colormap(name: str):
@@ -374,6 +345,11 @@ class NativeExplorer:
         self.plotter.add_text(
             self._status(clim), name="arepo-status", position="upper_left",
             font_size=10, color="white")
+        snapshot = "UNKNOWN" if self.scene.snapshot is None else str(self.scene.snapshot)
+        self.plotter.add_text(
+            f"VISIBLE CELLS: AREPO SNAPSHOT {snapshot}",
+            name="visible-snapshot", position="lower_right",
+            font_size=10, color="white")
         self.plotter.render()
 
     def cycle_channel(self, step: int) -> None:
@@ -507,7 +483,12 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--max-points", type=int, default=400_000,
                         help="Cell centers to display; zero loads every cell")
     parser.add_argument("--scene-sha256")
-    parser.add_argument("--field-sidecar", type=Path)
+    field_source = parser.add_mutually_exclusive_group()
+    field_source.add_argument("--field-sidecar", type=Path)
+    field_source.add_argument(
+        "--rsync-field-sidecar",
+        help="Remote rsync source for the particle-ID-bound physical-field sidecar")
+    parser.add_argument("--field-sidecar-sha256")
     parser.add_argument(
         "--cache-directory", type=Path,
         help="Content-addressed local cache; defaults under ~/.cache for rsync")
@@ -527,6 +508,10 @@ def add_arguments(parser: argparse.ArgumentParser) -> None:
                         help="Build one frame without opening a desktop window")
     parser.add_argument("--screenshot", type=Path,
                         help="Write one PNG; implies off-screen mode")
+    parser.add_argument("--cleanup-on-close", action="store_true",
+                        help="Archive poses by rsync and remove verified scene/sidecar caches")
+    parser.add_argument("--sync-back-destination",
+                        help="Unique no-clobber host:/path for pose/session outputs")
 
 
 def run(args: argparse.Namespace) -> int:
@@ -547,9 +532,26 @@ def run(args: argparse.Namespace) -> int:
     elif args.cache_directory is not None:
         scene_path, scene_digest = cache_scene_file(
             args.scene, args.scene_sha256, args.cache_directory)
+    field_sidecar = args.field_sidecar
+    if args.rsync_field_sidecar is not None:
+        if args.field_sidecar_sha256 is None:
+            raise ValueError(
+                "--rsync-field-sidecar requires --field-sidecar-sha256")
+        cache_directory = (
+            scene_path.parent.parent / "fields" if args.rsync_scene is not None
+            else Path.home() / ".cache/arepo-camera-lab/fields")
+        field_sidecar, _ = acquire_verified_file(
+            args.rsync_field_sidecar, args.field_sidecar_sha256,
+            cache_directory)
+    if args.cleanup_on_close:
+        if args.rsync_scene is None or args.sync_back_destination is None:
+            raise ValueError(
+                "--cleanup-on-close requires --rsync-scene and "
+                "--sync-back-destination")
+        args.poses_directory.expanduser().resolve().mkdir(parents=True, exist_ok=True)
     scene = load_native_scene(
         scene_path, snapshot=args.snapshot, max_points=args.max_points,
-        scene_sha256=scene_digest, field_sidecar=args.field_sidecar)
+        scene_sha256=scene_digest, field_sidecar=field_sidecar)
     explorer = create_explorer(
         scene, channel=args.channel, palette=args.palette, scale=args.scale,
         point_size=args.point_size, opacity=args.opacity,
@@ -575,4 +577,13 @@ def run(args: argparse.Namespace) -> int:
         explorer.plotter.show(auto_close=True)
     else:
         explorer.plotter.show()
+    if args.cleanup_on_close:
+        cached_inputs = [session_cleanup.CachedInput(
+            scene_path, args.rsync_scene, args.scene_sha256)]
+        if args.rsync_field_sidecar is not None:
+            cached_inputs.append(session_cleanup.CachedInput(
+                field_sidecar, args.rsync_field_sidecar,
+                args.field_sidecar_sha256))
+        session_cleanup.archive_and_cleanup(
+            args.poses_directory, args.sync_back_destination, cached_inputs)
     return 0

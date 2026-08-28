@@ -21,14 +21,34 @@ conda activate arepo-camera-lab
 arepo-camera-lab demo
 ```
 
-To load a portable scene and keep switching files without restarting:
+For reviewed camera-knot epochs, use a verified snapshot catalog. The dropdown
+contains only entries with both a hash-bound portable scene and a hash-bound
+physical-field sidecar:
 
 ```bash
 arepo-camera-lab serve \
-  --scene /absolute/path/to/scene_v052.bin \
+  --catalog /absolute/path/to/camera_lab_catalog.json \
   --snapshot 721 \
-  --max-points 400000
+  --max-points 400000 \
+  --cache-directory ~/.cache/arepo-camera-lab \
+  --session-directory ~/camera-lab-poses
 ```
+
+The snapshot control is a dropdown, not a free-running number. Selecting a row
+rsyncs and verifies that exact scene/sidecar pair before the visible-data label
+changes. A catalog has a global `required_auxiliary_fields` contract, so an
+epoch missing magnetic field, pressure, or sound speed cannot silently appear
+with fewer controls. See `examples/catalog.example.json`.
+
+For an automatically archived disposable cache, add
+`--cleanup-on-close --sync-back-destination user@login:/unique/session/path`.
+The **Archive & close** button then stops the server, checksum-uploads the
+numbered pose files, verifies every cluster input, and removes only the verified
+local cache files. Closing a browser tab alone deliberately does not delete data
+because reloads and accidental tab closes are ambiguous.
+
+For one ad-hoc local file, `serve --scene ... --field-sidecar ... --snapshot
+721` remains available, but it does not create a multi-epoch dropdown.
 
 For the native VTK desktop explorer, including magnetic-vector glyphs when a
 field sidecar is supplied:
@@ -66,6 +86,10 @@ rsync progress, supports resuming an interrupted `.rsync-partial`, and verifies
 the complete file against `--scene-sha256` before loading it. Subsequent launches
 reuse the verified cache. It does not download every simulation snapshot.
 
+Catalog mode applies the same resumable, checksum-verified rsync behavior to
+both the selected scene and its physical-field sidecar. It downloads only the
+selected dropdown epoch, not the entire simulation.
+
 For a scene already stored on a local filesystem, use `--scene /local/path`.
 The optional `--cache-directory` with `--scene` performs a verified local copy;
 it is not needed for ordinary local files.
@@ -74,10 +98,12 @@ Immutable scenes with an already verified manifest digest can skip a second
 full-file hash pass by adding `--scene-sha256 <digest>`. Files loaded from the
 toolbar are hashed normally.
 
-The server listens only on `127.0.0.1`. Scene files stay on the local computer.
-The toolbar accepts another absolute scene path at any time. `400000` remains a
-fast default, but there is no artificial upper point limit: enter `0` to load
-every cell in the scene. The status band reports each loading phase and progress.
+The server listens only on `127.0.0.1`. Open the printed `http://127.0.0.1`
+URL; opening the control shell as a `file://` page cannot reach the local API.
+`400000` remains a fast default, but there is no artificial upper point limit:
+enter `0` to load every cell in the scene. The status band reports each loading
+phase and progress, and the lower-right label always states which simulation
+output supplied the cells currently visible.
 
 The display panel keeps the underlying channel values rather than baking in one
 normalization. For each channel you can choose linear, log10, or symmetric-log
@@ -101,7 +127,7 @@ arepo-camera-lab build \
 - Shift-drag or right-drag: pan the look-at point.
 - Wheel or the zoom buttons: change orthographic half extent.
 - Double-click: recenter on a visible feature and move inward by 2.86x.
-- `K`: save the current camera pose for the displayed snapshot.
+- `K`: append a no-clobber camera alternative for the displayed snapshot.
 - `Space`: play a compiled camera path when one is embedded.
 - `R`: reset the camera.
 
@@ -167,9 +193,13 @@ the data in `snapshot_0721.hdf5`. A **camera pose** is only the selected look-at
 point, orientation, roll, and orthographic half extent associated with that
 output. These are separate concepts throughout the UI.
 
-The live server keeps saved poses in browser local storage while scenes are
-switched. Download the combined JSON regularly. The point budget controls cell
-detail only; it has no effect on the number or smoothness of spline knots.
+The live server keeps every saved alternative in browser local storage and also
+writes a numbered JSON under `--session-directory`. Repeated `K` presses never
+overwrite a pose. Downloaded JSON preserves all alternatives, while its
+`keyframes` list contains the latest pose for each simulation output so the
+spline compiler still receives a single-valued camera function. The point
+budget controls cell detail only; it has no effect on the number or smoothness
+of spline knots.
 
 The spline does not select which simulation outputs will be rendered. Final
 production can render every available AREPO snapshot. It only needs a sparse
@@ -199,7 +229,7 @@ produces a continuously moving camera rather than a hard cut.
 
 ## Scene format
 
-Version `0.3` reads portable `ARVTKSTARV052A` full-cell scenes containing cell
+Version `0.4` reads portable `ARVTKSTARV052A` full-cell scenes containing cell
 position, density, temperature, velocity, and stable particle ID. This is a
 deliberately explicit contract. Raw AREPO HDF5 snapshots vary in field names,
 unit metadata, and temperature conversion, so the project does not guess those
@@ -235,3 +265,28 @@ python -m unittest discover -s tests -v
 
 The project uses no-clobber output behavior for generated scenes, HTML files,
 camera paths, and diagnostics.
+
+## Archive and clear a local session
+
+Large caches are disposable only after their immutable cluster originals and
+the uploaded session outputs are verified. The cleanup command checks both
+local and remote input SHA-256 values, creates a unique remote destination,
+rsyncs the pose directory with checksums, verifies a dry-run is empty, and only
+then deletes the named local cache files:
+
+```bash
+arepo-camera-lab cleanup \
+  --outputs-directory ~/camera-lab-poses \
+  --sync-back-destination user@login:/cluster/camera-lab-sessions/session-001 \
+  --cached-scene ~/.cache/arepo-camera-lab/scenes/scene_v052_<hash>.bin \
+  --remote-scene-source user@login:/cluster/scenes/snapshot_0721/scene_v052.bin \
+  --scene-sha256 <scene-sha256> \
+  --cached-field-sidecar ~/.cache/arepo-camera-lab/fields/snapshot_0721.fields_<hash>.npz \
+  --remote-field-sidecar-source user@login:/cluster/fields/snapshot_0721.fields.npz \
+  --field-sidecar-sha256 <sidecar-sha256>
+```
+
+The native VTK command can perform the same operation when its window closes by
+adding `--cleanup-on-close --sync-back-destination user@login:/unique/path` and
+using both `--rsync-scene` and `--rsync-field-sidecar`. Any failed hash or
+transfer preserves the local cache.

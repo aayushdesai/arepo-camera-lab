@@ -4,10 +4,11 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
+from unittest import mock
 
 import numpy as np
 
-from arepo_camera_lab import demo, fields, server, spline, viewer, vtk_backend
+from arepo_camera_lab import catalog, cleanup, demo, fields, server, spline, viewer, vtk_backend
 
 
 class CameraLabTest(unittest.TestCase):
@@ -55,7 +56,25 @@ class CameraLabTest(unittest.TestCase):
             self.assertIn("Magnetic field, pressure, and entropy are unavailable", html)
             self.assertIn("localStorage.setItem(KEYFRAME_STORAGE", html)
             self.assertIn("scene_sha256:DATA.scene.sha256", html)
+            self.assertIn("VISIBLE CELLS: AREPO SNAPSHOT", html)
+            self.assertIn('id="snapshot" type="text" readonly', html)
+            self.assertIn("keyframes.push(p)", html)
+            self.assertNotIn("keyframes[old]=p", html)
+            self.assertIn("visible cells remain AREPO snapshot", html)
+            self.assertIn("/api/pose", html)
             self.assertEqual(status["scene_sha256"], digest)
+            state.session_directory = Path(temporary) / "server-poses"
+            saved_pose = state.save_pose({
+                "snapshot": 721,
+                "position_cm": [1.0, 2.0, 3.0],
+                "look_at_cm": [0.0, 0.0, 0.0],
+                "view_direction": [-1.0, 0.0, 0.0],
+                "up": [0.0, 0.0, 1.0],
+                "screen_half_extent_cm": 4.0,
+                "scene_sha256": digest,
+                "scene_path": str(scene),
+            })
+            self.assertTrue(saved_pose.is_file())
             with self.assertRaises(ValueError):
                 state.load(scene, 721, 3000, "not-a-digest")
 
@@ -86,6 +105,12 @@ class CameraLabTest(unittest.TestCase):
             self.assertEqual(ready["point_count"], 5000)
             self.assertEqual(ready["requested_points"], 0)
             self.assertIn('id="progress"', server.APP_HTML)
+            self.assertIn('id="snapshot" aria-label="Available AREPO snapshots"',
+                          server.APP_HTML)
+            self.assertIn("/api/catalog", server.APP_HTML)
+            self.assertIn("Local camera-lab server unavailable", server.APP_HTML)
+            self.assertIn("Archive &amp; close", server.APP_HTML)
+            self.assertIn("/api/shutdown", server.APP_HTML)
 
     def test_auxiliary_magnetic_channels_and_id_alignment(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -198,6 +223,8 @@ class CameraLabTest(unittest.TestCase):
             self.assertAlmostEqual(
                 pose["screen_half_extent_cm"], native.display_radius_cm * 0.25)
             output = vtk_backend.write_pose(native, camera, root / "poses")
+            alternative = vtk_backend.write_pose(native, camera, root / "poses")
+            self.assertNotEqual(output, alternative)
             saved = json.loads(output.read_text(encoding="utf-8"))
             self.assertEqual(saved["keyframes"][0]["snapshot"], 721)
             self.assertIn("native_vtk", saved["keyframes"][0]["backend"])
@@ -216,6 +243,62 @@ class CameraLabTest(unittest.TestCase):
                 scene, digest, root / "cache")
             self.assertEqual(repeated, cached)
             self.assertEqual(repeated_digest, digest)
+
+    def test_verified_snapshot_catalog_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "catalog.json"
+            digest_a = "a" * 64
+            digest_b = "b" * 64
+            path.write_text(json.dumps({
+                "schema": catalog.CATALOG_SCHEMA,
+                "required_auxiliary_fields": [
+                    "magnetic_field_gauss", "pressure_dyn_cm2", "sound_speed_cm_s"],
+                "frames": [{
+                    "snapshot": 721,
+                    "label": "disk formation",
+                    "scene_source": "user@host:/data/snapshot_0721/scene_v052.bin",
+                    "scene_sha256": digest_a,
+                    "field_sidecar_source": "user@host:/data/snapshot_0721.fields.npz",
+                    "field_sidecar_sha256": digest_b,
+                }],
+            }), encoding="utf-8")
+            loaded = catalog.load_catalog(path)
+            self.assertEqual(list(loaded.frames), [721])
+            state = server.ViewerState(catalog=loaded)
+            public = state.catalog_payload()
+            self.assertEqual(public["frames"][0]["snapshot"], 721)
+            self.assertEqual(len(public["required_auxiliary_fields"]), 3)
+
+    def test_cleanup_deletes_cache_only_after_verified_archive(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            outputs = root / "poses"
+            outputs.mkdir()
+            (outputs / "pose.json").write_text("{}\n", encoding="utf-8")
+            cached = root / "scene.bin"
+            cached.write_bytes(b"verified scene")
+            digest = viewer.sha256(cached)
+            item = cleanup.CachedInput(
+                cached, "user@host:/cluster/scene.bin", digest)
+            with mock.patch.object(cleanup, "remote_sha256", return_value=digest), \
+                    mock.patch.object(cleanup, "sync_directory_no_clobber") as sync:
+                receipt = cleanup.archive_and_cleanup(
+                    outputs, "user@host:/cluster/sessions/unique", [item])
+            sync.assert_called_once()
+            self.assertFalse(cached.exists())
+            self.assertTrue(receipt.is_file())
+
+            failed = root / "failed.bin"
+            failed.write_bytes(b"keep me")
+            failed_digest = viewer.sha256(failed)
+            with mock.patch.object(cleanup, "remote_sha256", return_value="0" * 64):
+                with self.assertRaises(ValueError):
+                    cleanup.archive_and_cleanup(
+                        outputs, "user@host:/cluster/sessions/another",
+                        [cleanup.CachedInput(
+                            failed, "user@host:/cluster/failed.bin", failed_digest)])
+            self.assertTrue(failed.exists())
 
     def test_webgl_float32_encoding_bounds_extreme_derived_values(self) -> None:
         encoded = viewer._encode_float32(np.asarray([1.0, 1.0e400, -1.0e400]))

@@ -556,7 +556,8 @@ button:hover { background: #222b33; }
 .meta { font-size: 11px; line-height: 1.55; color: #8fa0ae; overflow-wrap: anywhere; }
 #status { margin-top: 10px; color: #b7c9d5; }
 #timeline { display: none; }
-.hint { position: fixed; right: 14px; bottom: 12px; padding: 6px 8px; background: rgba(8,11,14,.78); color: #a9b6bf; font-size: 11px; }
+.hint { position: fixed; right: 14px; bottom: 46px; padding: 6px 8px; background: rgba(8,11,14,.78); color: #a9b6bf; font-size: 11px; }
+#visibleSnapshot { position: fixed; right: 14px; bottom: 12px; z-index: 4; padding: 7px 10px; border: 1px solid #46535e; border-radius: 4px; background: rgba(8,11,14,.92); color: #e8f1f5; font-size: 12px; font-weight: 650; }
 @media (max-width: 760px) { #panel { width: 290px; } #view { left: 290px; width: calc(100vw - 290px); } }
 </style>
 </head>
@@ -595,8 +596,8 @@ button:hover { background: #222b33; }
   <div class="row"><button id="fit">Fit cloud</button><button id="rollRight">Roll +2 deg</button></div>
   <div class="row"><button id="zoomIn">Zoom in 2x</button><button id="zoomOut">Zoom out 2x</button></div>
   <div id="zoomReadout" class="meta"></div>
-  <label for="snapshot">AREPO snapshot index</label><input id="snapshot" type="number" min="0" step="1">
-  <div class="meta">This is the AREPO output index: 721 means snapshot_0721.hdf5. A camera pose stores only the view, look-at point, roll, and zoom associated with that output.</div>
+  <label for="snapshot">Visible AREPO snapshot index</label><input id="snapshot" type="text" readonly>
+  <div class="meta">This value comes from the cells currently loaded. It cannot be changed by editing camera metadata. A camera pose stores only the view, look-at point, roll, and zoom for this simulation output.</div>
   <button id="addPose">Save camera pose</button>
   <div class="row"><button id="copyPose">Copy current pose</button><button id="download">Download camera poses</button></div>
   <button id="clearPoses">Clear saved camera poses</button>
@@ -610,9 +611,11 @@ button:hover { background: #222b33; }
   <div id="status" class="meta"></div>
 </aside>
 <div class="hint">Drag: orbit | Shift/right drag: pan | Wheel: zoom | Double-click: enter feature | K: save pose | Space: play</div>
+<div id="visibleSnapshot">VISIBLE CELLS: AREPO SNAPSHOT UNKNOWN</div>
 <script>
 const DATA = __PAYLOAD__;
-const KEYFRAME_STORAGE='arepo_camera_lab_keyframes_v001';
+const KEYFRAME_STORAGE='arepo_camera_lab_camera_poses_v002';
+const LEGACY_KEYFRAME_STORAGE='arepo_camera_lab_keyframes_v001';
 const canvas = document.getElementById('view');
 const gl = canvas.getContext('webgl', {antialias: true, alpha: false});
 if (!gl) throw new Error('WebGL is required');
@@ -699,7 +702,14 @@ function rotate(vector, axis, angle) { const u=V.unit(axis), c=Math.cos(angle),s
 function cleanBasis(forward,up) { forward=V.unit(forward); let right=V.unit(V.cross(forward,up)); up=V.unit(V.cross(right,forward)); return {forward,up,right}; }
 const initial=DATA.initial_camera;
 let camera={target:[...initial.target],scale:initial.scale,...cleanBasis(initial.forward,initial.up)};
-function storedKeyframes(){try{const value=JSON.parse(localStorage.getItem(KEYFRAME_STORAGE)||'[]');return Array.isArray(value)?value:[];}catch(error){return [];}}
+function storedKeyframes(){
+  try {
+    const current=JSON.parse(localStorage.getItem(KEYFRAME_STORAGE)||'null');
+    if(Array.isArray(current))return current;
+    const legacy=JSON.parse(localStorage.getItem(LEGACY_KEYFRAME_STORAGE)||'[]');
+    return Array.isArray(legacy)?legacy:[];
+  } catch(error) { return []; }
+}
 function persistKeyframes(){try{localStorage.setItem(KEYFRAME_STORAGE,JSON.stringify(keyframes));return true;}catch(error){return false;}}
 let keyframes=storedKeyframes(), dragging=false, last=[0,0], panMode=false, playing=null;
 function setCamera(entry) { camera.target=[...entry.target]; camera.scale=entry.scale; Object.assign(camera,cleanBasis(entry.forward,entry.up)); }
@@ -715,7 +725,7 @@ function applyPreset(){if(rangePreset.value==='custom')return;let low,high;if(ra
 function render(){resize();const [low,high]=safeRange();gl.clearColor(0.015,0.022,0.03,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.uniform3fv(locations.target,camera.target);gl.uniform3fv(locations.right,camera.right);gl.uniform3fv(locations.up,camera.up);gl.uniform3fv(locations.forward,camera.forward);gl.uniform1f(locations.scale,camera.scale);gl.uniform1f(locations.aspect,canvas.width/canvas.height);gl.uniform1f(locations.depth,4.0);gl.uniform1f(locations.point,+pointSize.value*(devicePixelRatio||1));gl.uniform1f(locations.domain_low,transformValue(low));gl.uniform1f(locations.domain_high,transformValue(high));gl.uniform1f(locations.scale_mode,scaleIds[scaleMode.value]);gl.uniform1f(locations.linthresh,Math.max(+linthresh.value,1e-30));gl.uniform1f(locations.opacity,+opacity.value);gl.uniform1f(locations.palette,paletteIds[palette.value]);gl.uniform1f(locations.gamma,+gamma.value);gl.uniform1f(locations.invert,invert.checked?1:0);gl.uniform1f(locations.saturation,+saturation.value);gl.uniform1f(locations.brightness,+brightness.value);gl.drawArrays(gl.POINTS,0,DATA.point_count);zoomReadout.textContent=`screen half extent ${(camera.scale*DATA.scene.display_radius_cm).toExponential(3)} cm (${camera.scale.toExponential(3)} scene radii)`;requestAnimationFrame(render);}
 function loadChannel(name){currentChannel=DATA.channels[name];gl.bindBuffer(gl.ARRAY_BUFFER,valueBuffer);gl.bufferData(gl.ARRAY_BUFFER,decodeFloat32(currentChannel.values),gl.STATIC_DRAW);gl.vertexAttribPointer(valueLocation,1,gl.FLOAT,false,0,0);scaleMode.value=currentChannel.default_scale;palette.value=currentChannel.default_palette;linthresh.value=currentChannel.linthresh;rangeLow.value=currentChannel.default_low;rangeHigh.value=currentChannel.default_high;rangePreset.value=currentChannel.diverging?'symmetric':'1,99';symlogControl.style.display=scaleMode.value==='symlog'?'block':'none';updateColorBar();updateChannelMeta();}
 const channel=document.getElementById('channel'),channelMeta=document.getElementById('channelMeta'),fieldNotice=document.getElementById('fieldNotice'),pointSize=document.getElementById('pointSize'),opacity=document.getElementById('opacity'),scaleMode=document.getElementById('scaleMode'),palette=document.getElementById('palette'),rangePreset=document.getElementById('rangePreset'),rangeLow=document.getElementById('rangeLow'),rangeHigh=document.getElementById('rangeHigh'),linthresh=document.getElementById('linthresh'),symlogControl=document.getElementById('symlogControl'),gamma=document.getElementById('gamma'),saturation=document.getElementById('saturation'),brightness=document.getElementById('brightness'),invert=document.getElementById('invert'),colorBar=document.getElementById('colorBar'),gammaValue=document.getElementById('gammaValue'),saturationValue=document.getElementById('saturationValue'),brightnessValue=document.getElementById('brightnessValue');
-const sceneMeta=document.getElementById('sceneMeta'),statusText=document.getElementById('status'),snapshotInput=document.getElementById('snapshot'),poseCountText=document.getElementById('poseCount');
+const sceneMeta=document.getElementById('sceneMeta'),statusText=document.getElementById('status'),snapshotInput=document.getElementById('snapshot'),poseCountText=document.getElementById('poseCount'),visibleSnapshot=document.getElementById('visibleSnapshot');
 const resetButton=document.getElementById('reset'),fitButton=document.getElementById('fit'),rollLeftButton=document.getElementById('rollLeft'),rollRightButton=document.getElementById('rollRight');
 const zoomInButton=document.getElementById('zoomIn'),zoomOutButton=document.getElementById('zoomOut'),zoomReadout=document.getElementById('zoomReadout');
 const addPoseButton=document.getElementById('addPose'),copyPoseButton=document.getElementById('copyPose'),downloadButton=document.getElementById('download'),clearPosesButton=document.getElementById('clearPoses');
@@ -728,22 +738,25 @@ palette.onchange=updateColorBar;invert.onchange=updateColorBar;rangePreset.oncha
 for(const input of [rangeLow,rangeHigh,linthresh])input.oninput=()=>{rangePreset.value='custom';updateChannelMeta();};
 for(const [input,output] of [[gamma,gammaValue],[saturation,saturationValue],[brightness,brightnessValue]]){const update=()=>output.textContent=(+input.value).toFixed(2);input.oninput=update;update();}
 document.getElementById('sceneMeta').textContent=`AREPO snapshot index ${DATA.scene.snapshot ?? 'unknown'} | ${DATA.point_count.toLocaleString()} / ${DATA.scene.num_cells.toLocaleString()} cells | radius ${DATA.scene.display_radius_cm.toExponential(3)} cm | scene ${DATA.scene.sha256.slice(0,12)}`;
-if(DATA.scene.snapshot !== null) snapshotInput.value=DATA.scene.snapshot;
+snapshotInput.value=DATA.scene.snapshot ?? 'unknown';
+visibleSnapshot.textContent=`VISIBLE CELLS: AREPO SNAPSHOT ${DATA.scene.snapshot ?? 'UNKNOWN'}`;
 canvas.oncontextmenu=e=>e.preventDefault();canvas.onpointerdown=e=>{dragging=true;canvas.classList.add('dragging');last=[e.clientX,e.clientY];panMode=e.shiftKey||e.button===2;canvas.setPointerCapture(e.pointerId);};canvas.onpointerup=e=>{dragging=false;canvas.classList.remove('dragging');canvas.releasePointerCapture(e.pointerId);};canvas.onpointermove=e=>{if(!dragging)return;const dx=e.clientX-last[0],dy=e.clientY-last[1];last=[e.clientX,e.clientY];if(panMode){camera.target=V.add(camera.target,V.add(V.scale(camera.right,-dx*camera.scale*0.0025),V.scale(camera.up,dy*camera.scale*0.0025)));}else{let f=rotate(camera.forward,camera.up,-dx*0.006),r=V.unit(V.cross(f,camera.up));f=rotate(f,r,-dy*0.006);let u=rotate(camera.up,r,-dy*0.006);Object.assign(camera,cleanBasis(f,u));}};
 canvas.onwheel=e=>{e.preventDefault();camera.scale=Math.min(100,Math.max(1e-6,camera.scale*Math.exp(e.deltaY*0.0015)));};
 canvas.ondblclick=e=>{const rect=canvas.getBoundingClientRect(),aspect=canvas.width/canvas.height,x=((e.clientX-rect.left)/rect.width*2-1)*camera.scale*aspect,y=(1-(e.clientY-rect.top)/rect.height*2)*camera.scale;camera.target=V.add(camera.target,V.add(V.scale(camera.right,x),V.scale(camera.up,y)));camera.scale=Math.max(1e-6,camera.scale*0.35);};
 function roll(angle){camera.up=rotate(camera.up,camera.forward,angle);Object.assign(camera,cleanBasis(camera.forward,camera.up));}
 resetButton.onclick=()=>setCamera(initial);fitButton.onclick=()=>{camera.target=[0,0,0];camera.scale=1.05;};rollLeftButton.onclick=()=>roll(-Math.PI/90);rollRightButton.onclick=()=>roll(Math.PI/90);
 zoomInButton.onclick=()=>{camera.scale=Math.max(1e-6,camera.scale*0.5);};zoomOutButton.onclick=()=>{camera.scale=Math.min(100,camera.scale*2);};
-function pose(){const radius=DATA.scene.display_radius_cm,center=DATA.scene.center_cm,look=V.add(center,V.scale(camera.target,radius)),half=camera.scale*radius,pos=V.sub(look,V.scale(camera.forward,4*half));return {snapshot:+snapshotInput.value,position_cm:pos,look_at_cm:look,view_direction:[...camera.forward],up:[...camera.up],screen_half_extent_cm:half,scene_sha256:DATA.scene.sha256,scene_path:DATA.scene.path};}
-function updateCount(){poseCountText.textContent=`${keyframes.length} camera pose${keyframes.length===1?'':'s'}`;}
-addPoseButton.onclick=()=>{if(snapshotInput.value===''){statusText.textContent='Enter a snapshot number first.';return;}const p=pose();const old=keyframes.findIndex(k=>k.snapshot===p.snapshot);if(old>=0)keyframes[old]=p;else keyframes.push(p);keyframes.sort((a,b)=>a.snapshot-b.snapshot);const persisted=persistKeyframes();updateCount();statusText.textContent=`Stored camera pose for snapshot ${p.snapshot}${persisted?' in this browser':' in memory only'}.`;};
+function pose(){if(DATA.scene.snapshot===null||DATA.scene.snapshot===undefined)throw new Error('The loaded scene has no AREPO snapshot index. Reload it with an explicit index before saving a pose.');const radius=DATA.scene.display_radius_cm,center=DATA.scene.center_cm,look=V.add(center,V.scale(camera.target,radius)),half=camera.scale*radius,pos=V.sub(look,V.scale(camera.forward,4*half));return {snapshot:Number(DATA.scene.snapshot),position_cm:pos,look_at_cm:look,view_direction:[...camera.forward],up:[...camera.up],screen_half_extent_cm:half,scene_sha256:DATA.scene.sha256,scene_path:DATA.scene.path};}
+function uniqueSnapshotCount(){return new Set(keyframes.map(entry=>entry.snapshot)).size;}
+function updateCount(){const epochs=uniqueSnapshotCount();poseCountText.textContent=`${keyframes.length} saved camera pose${keyframes.length===1?'':'s'} across ${epochs} AREPO snapshot${epochs===1?'':'s'}`;}
+function poseIdentifier(snapshot){if(globalThis.crypto&&crypto.randomUUID)return `snapshot-${snapshot}-${crypto.randomUUID()}`;return `snapshot-${snapshot}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`;}
+addPoseButton.onclick=async()=>{try{const p=pose();p.pose_id=poseIdentifier(p.snapshot);p.saved_at=new Date().toISOString();keyframes.push(p);const persisted=persistKeyframes();updateCount();const alternatives=keyframes.filter(entry=>entry.snapshot===p.snapshot).length;let serverCopy='';try{const response=await fetch('/api/pose',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}),result=await response.json();if(response.ok)serverCopy=` and ${result.path}`;else throw new Error(result.error||`HTTP ${response.status}`);}catch(error){serverCopy=`; browser copy kept, server copy unavailable (${error.message})`;}statusText.textContent=`Saved no-clobber camera alternative ${alternatives} for visible AREPO snapshot ${p.snapshot}${persisted?' in this browser':' in memory only'}${serverCopy}.`;}catch(error){statusText.textContent=error.message;}};
 copyPoseButton.onclick=async()=>{await navigator.clipboard.writeText(JSON.stringify(pose(),null,2));statusText.textContent='Current pose copied.';};
-downloadButton.onclick=()=>{const payload={schema:'stellar_camera_keyframes_v001',scene:DATA.scene,keyframes};const blob=new Blob([JSON.stringify(payload,null,2)+'\n'],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='stellar_camera_poses.json';a.click();URL.revokeObjectURL(a.href);};
+downloadButton.onclick=()=>{const latestBySnapshot=new Map();for(const entry of keyframes)latestBySnapshot.set(Number(entry.snapshot),entry);const selected=[...latestBySnapshot.values()].sort((a,b)=>a.snapshot-b.snapshot);const payload={schema:'stellar_camera_keyframes_v001',scene:DATA.scene,keyframes:selected,alternatives:keyframes,selection:'keyframes contains the latest saved pose per AREPO snapshot; alternatives preserves every no-clobber save'};const blob=new Blob([JSON.stringify(payload,null,2)+'\n'],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='stellar_camera_poses.json';a.click();URL.revokeObjectURL(a.href);statusText.textContent=`Downloaded ${selected.length} spline knot${selected.length===1?'':'s'} plus ${keyframes.length} preserved alternative${keyframes.length===1?'':'s'}.`;};
 clearPosesButton.onclick=()=>{if(keyframes.length&&confirm('Clear all saved camera poses from this browser?')){keyframes=[];persistKeyframes();updateCount();statusText.textContent='Saved camera poses cleared.';}};
 updateCount();
 timelinePanel.style.display='block';
-if(DATA.camera_path.length){pathSlider.max=DATA.camera_path.length-1;const show=i=>{const entry=DATA.camera_path[i];setCamera(entry);snapshotInput.value=entry.snapshot;pathStatus.textContent=`snapshot ${entry.snapshot} (${i+1}/${DATA.camera_path.length})`;};pathSlider.oninput=()=>show(+pathSlider.value);playButton.onclick=()=>{if(playing)return;playing=setInterval(()=>{let i=(+pathSlider.value+1)%DATA.camera_path.length;pathSlider.value=i;show(i);},50);};stopButton.onclick=()=>{clearInterval(playing);playing=null;};show(0);}else{pathSlider.disabled=true;playButton.disabled=true;stopButton.disabled=true;pathStatus.textContent='No spline is loaded. Save one camera pose at each of at least two different snapshots, compile them, then rebuild this viewer with --camera-path.';}
+if(DATA.camera_path.length){pathSlider.max=DATA.camera_path.length-1;const show=i=>{const entry=DATA.camera_path[i];setCamera(entry);pathStatus.textContent=`camera path row ${entry.snapshot} (${i+1}/${DATA.camera_path.length}); visible cells remain AREPO snapshot ${DATA.scene.snapshot??'unknown'}`;};pathSlider.oninput=()=>show(+pathSlider.value);playButton.onclick=()=>{if(playing)return;playing=setInterval(()=>{let i=(+pathSlider.value+1)%DATA.camera_path.length;pathSlider.value=i;show(i);},50);};stopButton.onclick=()=>{clearInterval(playing);playing=null;};show(0);}else{pathSlider.disabled=true;playButton.disabled=true;stopButton.disabled=true;pathStatus.textContent='No spline is loaded. Save one camera pose at each of at least two different snapshots, compile them, then rebuild this viewer with --camera-path.';}
 document.onkeydown=e=>{if(e.key==='k'||e.key==='K')addPoseButton.click();if(e.code==='Space'){e.preventDefault();if(playing)stopButton.click();else if(DATA.camera_path.length)playButton.click();else statusText.textContent='Space plays a compiled path; this single-scene viewer has none loaded yet.';}if(e.key==='r'||e.key==='R')resetButton.click();};
 render();
 </script>
