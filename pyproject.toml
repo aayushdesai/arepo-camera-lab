@@ -4,14 +4,14 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "arepo-camera-lab"
-version = "0.1.0"
+version = "0.2.0"
 description = "Interactive WebGL camera and physical-channel explorer for portable AREPO cell scenes"
 readme = "README.md"
 requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{name = "Aayush Desai"}]
-dependencies = ["numpy>=1.24"]
+dependencies = ["numpy>=1.24", "h5py>=3.11"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Programming Language :: Python :: 3",

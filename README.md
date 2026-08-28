@@ -38,6 +38,12 @@ The toolbar accepts another absolute scene path at any time. `400000` remains a
 fast default, but there is no artificial upper point limit: enter `0` to load
 every cell in the scene. The status band reports each loading phase and progress.
 
+The display panel keeps the underlying channel values rather than baking in one
+normalization. For each channel you can choose linear, log10, or symmetric-log
+scaling; edit the numeric minimum and maximum; apply percentile presets; choose
+from eight color maps; invert the map; and tune gamma, saturation, brightness,
+point size, and opacity. The color range and units are shown beside the control.
+
 A completely self-contained HTML file can also be built:
 
 ```bash
@@ -82,6 +88,37 @@ Magnetic and thermodynamic extensions are intentionally schema-bound. See
 pressure, entropy, and dimensionless-ratio controls and the source fields they
 require.
 
+### Magnetic, pressure, and entropy fields
+
+Portable v052 scenes do not contain magnetic field, pressure, or entropy. The
+viewer therefore never invents those quantities. Build an explicit companion
+file from the matching raw HDF5 snapshot, with unit conversions supplied by the
+user:
+
+```bash
+arepo-camera-lab fields \
+  --snapshot /absolute/path/to/snapshot_0721.hdf5 \
+  --output snapshot_0721.fields.npz \
+  --magnetic-dataset PartType0/MagneticField \
+  --magnetic-unit-gauss <code-B-to-gauss> \
+  --pressure-dataset PartType0/Pressure \
+  --pressure-unit-dyn-cm2 <code-pressure-to-cgs> \
+  --entropy-dataset PartType0/Entropy \
+  --entropy-unit-cgs <code-entropy-to-cgs>
+
+arepo-camera-lab serve \
+  --scene /absolute/path/to/scene_v052.bin \
+  --field-sidecar snapshot_0721.fields.npz \
+  --snapshot 721
+```
+
+Dataset names are explicit because AREPO outputs differ by configuration. Unit
+factors are mandatory. The sidecar is joined to the scene by stable particle ID
+and rejected if any displayed cell is missing or duplicated. A valid magnetic
+sidecar adds `|B|`, signed axial and azimuthal field, magnetic pressure, Alfvén
+speed, B-velocity alignment, and toroidal/poloidal fractions. Pressure also
+enables plasma beta; sound speed enables Mach number.
+
 ## Camera poses and spline paths
 
 A snapshot is a simulation frame. A camera pose is the selected look-at point,
@@ -115,7 +152,7 @@ produces a continuously moving camera rather than a hard cut.
 
 ## Scene format
 
-Version `0.1` reads portable `ARVTKSTARV052A` full-cell scenes containing cell
+Version `0.2` reads portable `ARVTKSTARV052A` full-cell scenes containing cell
 position, density, temperature, velocity, and stable particle ID. This is a
 deliberately explicit contract. Raw AREPO HDF5 snapshots vary in field names,
 unit metadata, and temperature conversion, so the project does not guess those

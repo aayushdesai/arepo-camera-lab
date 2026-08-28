@@ -1,10 +1,10 @@
 # Physical-channel extensions
 
-The portable v052 scene currently contains cell position, density, temperature,
-velocity, and stable particle ID. Rotation and outflow channels can therefore
-be derived without inventing additional physics. Magnetic and thermodynamic
-controls require an extended scene contract or an explicit raw-snapshot field
-map.
+The portable v052 scene contains cell position, density, temperature, velocity,
+and stable particle ID. Rotation and outflow channels can therefore be derived
+without inventing additional physics. Magnetic and thermodynamic controls use
+an explicit `.fields.npz` sidecar generated from the matching HDF5 snapshot.
+The join is by particle ID and all unit conversions are recorded at creation.
 
 ## Magnetic controls
 
@@ -41,10 +41,15 @@ degeneracy and the configured equation of state matter. The public loader should
 therefore read native pressure/entropy when available or require an explicit EOS
 adapter, never silently manufacture them.
 
-## Proposed adapter contract
+## Implemented adapter contract
 
-A raw-HDF5 adapter should accept a checked mapping file that specifies dataset
-names, unit conversions, comoving/physical state, magnetic-unit convention,
-mean molecular weight or EOS provenance, and optional composition fields. The
-resulting portable scene should record every enabled channel and formula in its
-manifest so browser colors remain reproducible.
+`arepo-camera-lab fields` accepts explicit dataset names and scale factors for
+magnetic field in Gauss, gas pressure in dyn cm^-2, specific entropy in declared
+cgs units, and sound speed in cm s^-1. It writes schema
+`arepo_camera_lab_fields_v001`, stable particle IDs, scaled float arrays, and a
+JSON provenance record into a no-clobber NPZ file. The viewer hashes the sidecar
+and records its path, digest, schema, and enabled fields in the scene payload.
+
+The adapter does not infer code units, mean molecular weight, an EOS, or
+comoving conventions. Those remain the responsibility of the simulation's
+verified parameter/build provenance.

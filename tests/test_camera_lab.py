@@ -7,7 +7,7 @@ import unittest
 
 import numpy as np
 
-from arepo_camera_lab import demo, server, spline, viewer
+from arepo_camera_lab import demo, fields, server, spline, viewer
 
 
 class CameraLabTest(unittest.TestCase):
@@ -49,6 +49,10 @@ class CameraLabTest(unittest.TestCase):
             self.assertIn("Math.max(1e-6", html)
             self.assertIn("screen half extent", html)
             self.assertIn("outward_mass_flux_proxy", html)
+            self.assertIn("Symmetric log", html)
+            self.assertIn("Color map", html)
+            self.assertIn("Gamma", html)
+            self.assertIn("Magnetic field, pressure, and entropy are unavailable", html)
             self.assertIn("localStorage.setItem(KEYFRAME_STORAGE", html)
             self.assertIn("scene_sha256:DATA.scene.sha256", html)
             self.assertEqual(status["scene_sha256"], digest)
@@ -82,6 +86,64 @@ class CameraLabTest(unittest.TestCase):
             self.assertEqual(ready["point_count"], 5000)
             self.assertEqual(ready["requested_points"], 0)
             self.assertIn('id="progress"', server.APP_HTML)
+
+    def test_auxiliary_magnetic_channels_and_id_alignment(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scene = root / "scene.bin"
+            sidecar = root / "fields.npz"
+            self.make_scene(scene, 5000)
+            ids = np.arange(5000, dtype=np.uint64) + 100
+            magnetic = np.column_stack((
+                np.linspace(1.0e5, 2.0e7, 5000),
+                np.linspace(-2.0e6, 3.0e6, 5000),
+                np.linspace(4.0e5, 8.0e6, 5000),
+            )).astype(np.float32)
+            np.savez_compressed(
+                sidecar, schema=np.asarray(viewer.AUXILIARY_SCHEMA),
+                particle_id=ids, magnetic_field_gauss=magnetic,
+                pressure_dyn_cm2=np.geomspace(1.0e14, 1.0e20, 5000).astype(np.float32),
+                specific_entropy_cgs=np.linspace(1.0, 3.0, 5000).astype(np.float32),
+                sound_speed_cm_s=np.geomspace(1.0e6, 1.0e8, 5000).astype(np.float32))
+            state = server.ViewerState()
+            ready = state.load(scene, 721, 3000, viewer.sha256(scene), sidecar)
+            self.assertTrue(ready["loaded"])
+            channels = state.payload["channels"]
+            for name in ("magnetic_field_strength", "magnetic_pressure",
+                         "alfven_speed", "plasma_beta", "specific_entropy",
+                         "sound_speed", "mach_number", "toroidal_field_fraction"):
+                self.assertIn(name, channels)
+            self.assertEqual(
+                state.payload["scene"]["auxiliary_fields"]["schema"],
+                viewer.AUXILIARY_SCHEMA)
+            self.assertIn("Auxiliary fields loaded", state.viewer_html())
+
+    def test_hdf5_field_sidecar_builder(self) -> None:
+        import h5py
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            snapshot = root / "snapshot.hdf5"
+            output = root / "snapshot.fields.npz"
+            with h5py.File(snapshot, "w") as handle:
+                gas = handle.create_group("PartType0")
+                gas.create_dataset("ParticleIDs", data=np.arange(8, dtype=np.uint64) + 7)
+                gas.create_dataset("MagneticField", data=np.ones((8, 3)))
+                gas.create_dataset("Pressure", data=np.arange(8, dtype=float) + 1.0)
+            result = fields.build_sidecar(
+                snapshot, output, ids_dataset="PartType0/ParticleIDs",
+                field_specs={
+                    "magnetic_field_gauss": ("PartType0/MagneticField", 2.0),
+                    "pressure_dyn_cm2": ("PartType0/Pressure", 3.0),
+                })
+            self.assertEqual(result["particle_count"], 8)
+            loaded = viewer.read_field_sidecar(output)
+            self.assertTrue(np.allclose(
+                loaded["fields"]["magnetic_field_gauss"], 2.0))
+            with self.assertRaises(FileExistsError):
+                fields.build_sidecar(
+                    snapshot, output, ids_dataset="PartType0/ParticleIDs",
+                    field_specs={"magnetic_field_gauss":
+                                 ("PartType0/MagneticField", 2.0)})
 
     def test_merge_key_pose_files(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

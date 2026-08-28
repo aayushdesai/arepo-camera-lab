@@ -35,6 +35,13 @@ CELL_DTYPE = np.dtype([
     ("velocity", "<f4", (3,)),
     ("particle_id", "<u8"),
 ], align=False)
+AUXILIARY_SCHEMA = "arepo_camera_lab_fields_v001"
+AUXILIARY_FIELDS = {
+    "magnetic_field_gauss": (3,),
+    "pressure_dyn_cm2": (),
+    "specific_entropy_cgs": (),
+    "sound_speed_cm_s": (),
+}
 
 
 def sha256(path: Path) -> str:
@@ -104,6 +111,58 @@ def read_header(path: Path) -> dict:
 def read_cells(path: Path, header: dict) -> np.memmap:
     return np.memmap(path, dtype=CELL_DTYPE, mode="r", offset=HEADER_BYTES,
                      shape=(int(header["num_cells"]),))
+
+
+def read_field_sidecar(path: Path) -> dict:
+    """Read explicit, particle-ID-bound fields not present in scene v052."""
+    path = path.expanduser().resolve()
+    if not path.is_file():
+        raise ValueError(f"field sidecar does not exist: {path}")
+    with np.load(path, allow_pickle=False) as source:
+        if "schema" not in source or str(source["schema"].item()) != AUXILIARY_SCHEMA:
+            raise ValueError(f"field sidecar schema must be {AUXILIARY_SCHEMA}")
+        if "particle_id" not in source:
+            raise ValueError("field sidecar lacks particle_id")
+        particle_id = np.asarray(source["particle_id"], dtype=np.uint64)
+        if particle_id.ndim != 1 or particle_id.size == 0:
+            raise ValueError("field sidecar particle_id must be a nonempty vector")
+        if np.unique(particle_id).size != particle_id.size:
+            raise ValueError("field sidecar particle_id values must be unique")
+        fields = {}
+        for name, trailing_shape in AUXILIARY_FIELDS.items():
+            if name not in source:
+                continue
+            values = np.asarray(source[name])
+            expected = (particle_id.size, *trailing_shape)
+            if values.shape != expected:
+                raise ValueError(
+                    f"field sidecar {name} has shape {values.shape}; expected {expected}")
+            if not np.all(np.isfinite(values)):
+                raise ValueError(f"field sidecar {name} contains non-finite values")
+            fields[name] = np.asarray(values, dtype=np.float64)
+        if not fields:
+            raise ValueError("field sidecar contains no supported physical fields")
+    order = np.argsort(particle_id)
+    return {
+        "path": path,
+        "sha256": sha256(path),
+        "particle_id": particle_id[order],
+        "fields": {name: values[order] for name, values in fields.items()},
+    }
+
+
+def align_field_sidecar(sidecar: dict, selected_ids: np.ndarray) -> dict[str, np.ndarray]:
+    source_ids = sidecar["particle_id"]
+    selected_ids = np.asarray(selected_ids, dtype=np.uint64)
+    locations = np.searchsorted(source_ids, selected_ids)
+    in_range = locations < source_ids.size
+    matched = np.zeros(selected_ids.shape, dtype=bool)
+    matched[in_range] = source_ids[locations[in_range]] == selected_ids[in_range]
+    if not np.all(matched):
+        missing = int(np.count_nonzero(~matched))
+        raise ValueError(
+            f"field sidecar does not contain {missing} selected scene particle IDs")
+    return {name: values[locations] for name, values in sidecar["fields"].items()}
 
 
 def periodic_delta(position: np.ndarray, origin: np.ndarray,
@@ -213,30 +272,51 @@ def _encode_float32(values: np.ndarray) -> str:
     return base64.b64encode(raw).decode("ascii")
 
 
-def _normalize_channel(values: np.ndarray, diverging: bool) -> tuple[np.ndarray, dict]:
-    finite = values[np.isfinite(values)]
-    if finite.size == 0:
-        return np.full(values.shape, 0.5, dtype=np.float32), {
-            "low": 0.0, "high": 1.0, "diverging": diverging}
+def _channel_payload(values: np.ndarray, *, label: str, units: str,
+                     diverging: bool = False, default_scale: str = "linear",
+                     default_palette: str | None = None) -> dict:
+    values = np.asarray(values, dtype=np.float64)
+    if not np.all(np.isfinite(values)):
+        raise ValueError(f"channel {label} contains non-finite values")
+    finite = values.reshape(-1)
+    percentiles = np.quantile(finite, np.linspace(0.0, 1.0, 101))
     if diverging:
-        bound = float(np.quantile(np.abs(finite), 0.99))
-        bound = max(bound, 1.0e-30)
+        bound = max(float(np.quantile(np.abs(finite), 0.99)), 1.0e-30)
         low, high = -bound, bound
+    elif default_scale == "log10":
+        positive = finite[finite > 0.0]
+        if positive.size == 0:
+            raise ValueError(f"logarithmic channel {label} has no positive values")
+        low, high = [float(value) for value in np.quantile(positive, [0.01, 0.99])]
     else:
         low, high = [float(value) for value in np.quantile(finite, [0.01, 0.99])]
-        if not high > low:
-            high = low + 1.0
-    normalized = np.clip((values - low) / (high - low), 0.0, 1.0)
-    normalized[~np.isfinite(normalized)] = 0.5
-    return normalized.astype(np.float32), {
-        "low": low, "high": high, "diverging": diverging}
+    if not high > low:
+        high = low + max(abs(low) * 1.0e-6, 1.0e-30)
+    nonzero = np.abs(finite[np.nonzero(finite)])
+    linthresh = float(np.quantile(nonzero, 0.10)) if nonzero.size else 1.0
+    return {
+        "label": label,
+        "units": units,
+        "diverging": diverging,
+        "default_scale": default_scale,
+        "default_palette": default_palette or ("blue_red" if diverging else "copper_blue"),
+        "default_low": low,
+        "default_high": high,
+        "data_min": float(np.min(finite)),
+        "data_max": float(np.max(finite)),
+        "positive_min": float(np.min(finite[finite > 0.0])) if np.any(finite > 0.0) else None,
+        "linthresh": max(linthresh, 1.0e-30),
+        "percentiles": [float(value) for value in percentiles],
+        "values": _encode_float32(values),
+    }
 
 
 def build_payload(scene: Path, header: dict, cells: np.memmap,
                   selected: np.ndarray, center_native: np.ndarray,
                   axis: np.ndarray, display_radius_cm: float | None,
                   scene_digest: str, snapshot: int | None,
-                  camera_path: Path | None) -> dict:
+                  camera_path: Path | None,
+                  field_sidecar: dict | None = None) -> dict:
     position_unit = float(header["position_unit_cm"])
     velocity_unit = float(header["velocity_unit_cm_per_s"])
     relative_cm = periodic_delta(np.asarray(cells["position"][selected], dtype=float),
@@ -254,7 +334,7 @@ def build_payload(scene: Path, header: dict, cells: np.memmap,
     radial_unit = np.divide(relative_cm, radius[:, None],
                             out=np.zeros_like(relative_cm),
                             where=radius[:, None] > 0.0)
-    radial_velocity = np.sum(velocity * radial_unit, axis=1) / 1.0e8
+    radial_velocity = np.sum(velocity * radial_unit, axis=1)
     height = np.sum(relative_cm * axis[None, :], axis=1)
     cylindrical = relative_cm - height[:, None] * axis[None, :]
     cylindrical_radius = np.linalg.norm(cylindrical, axis=1)
@@ -264,41 +344,122 @@ def build_payload(scene: Path, header: dict, cells: np.memmap,
     azimuthal_unit = np.cross(axis[None, :], cylindrical_unit)
     azimuthal_velocity = np.sum(velocity * azimuthal_unit, axis=1)
     rotational_fraction = np.abs(azimuthal_velocity) / np.maximum(speed, 1.0)
-    outward_axial = np.sign(height) * np.sum(velocity * axis[None, :], axis=1) / 1.0e8
+    outward_axial = np.sign(height) * np.sum(velocity * axis[None, :], axis=1)
     angular_momentum = np.sum(np.cross(relative_cm, velocity) * axis[None, :], axis=1)
     angular_momentum_alignment = angular_momentum / np.maximum(radius * speed, 1.0)
     density_log10 = np.asarray(cells["density"][selected], dtype=float) - 10.0
-    outward_mass_flux = density_log10 + np.log10(
-        np.maximum(outward_axial * 1.0e8, 1.0))
-    channels_raw = {
-        "density": (density_log10, False, "log10 density proxy"),
-        "temperature": (np.log10(np.maximum(
-            np.asarray(cells["temperature"][selected], dtype=float), 1.0)),
-                        False, "log10 temperature [K]"),
-        "speed": (np.log10(np.maximum(speed, 1.0)), False,
-                  "log10 speed [cm/s]"),
-        "radial_velocity": (radial_velocity, True,
-                            "radial velocity [1e8 cm/s]"),
-        "azimuthal_velocity": (azimuthal_velocity / 1.0e8, True,
-                               "signed azimuthal velocity [1e8 cm/s]"),
-        "rotational_fraction": (rotational_fraction, False,
-                                "absolute azimuthal speed / total speed"),
-        "angular_momentum_alignment": (angular_momentum_alignment, True,
-                                       "signed axial angular-momentum alignment"),
-        "outward_axial_velocity": (outward_axial, True,
-                                   "signed outward axial speed [1e8 cm/s]"),
-        "outward_mass_flux_proxy": (outward_mass_flux, False,
-                                    "log10 outward rho-v proxy"),
-        "cylindrical_radius": (cylindrical_radius / display_radius_cm, False,
-                               "cylindrical radius / display radius"),
-        "axial_position": (height / display_radius_cm, True,
-                           "signed axial position / display radius"),
+    density_cgs = np.power(10.0, density_log10)
+    outward_mass_flux = density_cgs * np.maximum(outward_axial, 0.0)
+    channels = {
+        "density": _channel_payload(
+            density_cgs, label="density proxy", units="g cm^-3",
+            default_scale="log10"),
+        "temperature": _channel_payload(
+            np.asarray(cells["temperature"][selected], dtype=float),
+            label="temperature", units="K", default_scale="log10",
+            default_palette="inferno"),
+        "speed": _channel_payload(
+            speed, label="speed", units="cm s^-1", default_scale="log10",
+            default_palette="viridis"),
+        "radial_velocity": _channel_payload(
+            radial_velocity, label="signed radial velocity", units="cm s^-1",
+            diverging=True, default_scale="symlog"),
+        "azimuthal_velocity": _channel_payload(
+            azimuthal_velocity, label="signed azimuthal velocity", units="cm s^-1",
+            diverging=True, default_scale="symlog"),
+        "rotational_fraction": _channel_payload(
+            rotational_fraction, label="absolute azimuthal speed / total speed",
+            units="dimensionless", default_palette="viridis"),
+        "angular_momentum_alignment": _channel_payload(
+            angular_momentum_alignment,
+            label="signed axial angular-momentum alignment", units="dimensionless",
+            diverging=True),
+        "outward_axial_velocity": _channel_payload(
+            outward_axial, label="signed outward axial speed", units="cm s^-1",
+            diverging=True, default_scale="symlog"),
+        "outward_mass_flux_proxy": _channel_payload(
+            outward_mass_flux, label="outward rho-v proxy",
+            units="g cm^-2 s^-1", default_scale="log10", default_palette="plasma"),
+        "cylindrical_radius": _channel_payload(
+            cylindrical_radius, label="cylindrical radius", units="cm",
+            default_scale="log10", default_palette="viridis"),
+        "axial_position": _channel_payload(
+            height, label="signed axial position", units="cm", diverging=True,
+            default_scale="symlog"),
     }
-    channels = {}
-    for name, (values, diverging, label) in channels_raw.items():
-        normalized, metadata = _normalize_channel(values, diverging)
-        metadata.update({"label": label, "values": _encode_float32(normalized)})
-        channels[name] = metadata
+
+    auxiliary_metadata = None
+    if field_sidecar is not None:
+        auxiliary = align_field_sidecar(
+            field_sidecar, np.asarray(cells["particle_id"][selected]))
+        auxiliary_metadata = {
+            "schema": AUXILIARY_SCHEMA,
+            "path": str(field_sidecar["path"]),
+            "sha256": field_sidecar["sha256"],
+            "fields": sorted(auxiliary),
+        }
+        magnetic = auxiliary.get("magnetic_field_gauss")
+        if magnetic is not None:
+            field_strength = np.linalg.norm(magnetic, axis=1)
+            field_axial = np.sum(magnetic * axis[None, :], axis=1)
+            field_cylindrical = np.sum(magnetic * cylindrical_unit, axis=1)
+            field_azimuthal = np.sum(magnetic * azimuthal_unit, axis=1)
+            field_poloidal = np.hypot(field_axial, field_cylindrical)
+            safe_field = np.maximum(field_strength, 1.0e-30)
+            magnetic_pressure = field_strength ** 2 / (8.0 * math.pi)
+            alfven_speed = field_strength / np.sqrt(
+                4.0 * math.pi * np.maximum(density_cgs, 1.0e-99))
+            field_velocity_alignment = np.sum(magnetic * velocity, axis=1) / np.maximum(
+                field_strength * speed, 1.0e-30)
+            channels.update({
+                "magnetic_field_strength": _channel_payload(
+                    field_strength, label="magnetic field strength", units="G",
+                    default_scale="log10", default_palette="plasma"),
+                "magnetic_field_axial": _channel_payload(
+                    field_axial, label="signed axial magnetic field", units="G",
+                    diverging=True, default_scale="symlog"),
+                "magnetic_field_azimuthal": _channel_payload(
+                    field_azimuthal, label="signed azimuthal magnetic field", units="G",
+                    diverging=True, default_scale="symlog"),
+                "magnetic_pressure": _channel_payload(
+                    magnetic_pressure, label="magnetic pressure B^2 / 8pi",
+                    units="dyn cm^-2", default_scale="log10", default_palette="magma"),
+                "alfven_speed": _channel_payload(
+                    alfven_speed, label="Alfven speed", units="cm s^-1",
+                    default_scale="log10", default_palette="viridis"),
+                "field_velocity_alignment": _channel_payload(
+                    field_velocity_alignment, label="B-velocity alignment",
+                    units="dimensionless", diverging=True),
+                "toroidal_field_fraction": _channel_payload(
+                    np.abs(field_azimuthal) / safe_field,
+                    label="absolute toroidal B / |B|", units="dimensionless",
+                    default_palette="viridis"),
+                "poloidal_field_fraction": _channel_payload(
+                    field_poloidal / safe_field, label="poloidal B / |B|",
+                    units="dimensionless", default_palette="viridis"),
+            })
+            pressure = auxiliary.get("pressure_dyn_cm2")
+            if pressure is not None:
+                channels["plasma_beta"] = _channel_payload(
+                    pressure / np.maximum(magnetic_pressure, 1.0e-99),
+                    label="plasma beta Pgas / Pmag", units="dimensionless",
+                    default_scale="log10", default_palette="turbo")
+        if "pressure_dyn_cm2" in auxiliary:
+            channels["gas_pressure"] = _channel_payload(
+                auxiliary["pressure_dyn_cm2"], label="gas pressure",
+                units="dyn cm^-2", default_scale="log10", default_palette="magma")
+        if "specific_entropy_cgs" in auxiliary:
+            channels["specific_entropy"] = _channel_payload(
+                auxiliary["specific_entropy_cgs"], label="specific entropy",
+                units="declared cgs", default_scale="symlog", default_palette="viridis")
+        if "sound_speed_cm_s" in auxiliary:
+            sound_speed = auxiliary["sound_speed_cm_s"]
+            channels["sound_speed"] = _channel_payload(
+                sound_speed, label="sound speed", units="cm s^-1",
+                default_scale="log10", default_palette="viridis")
+            channels["mach_number"] = _channel_payload(
+                speed / np.maximum(sound_speed, 1.0e-30), label="Mach number",
+                units="dimensionless", default_scale="log10", default_palette="turbo")
 
     side = np.cross(axis, np.array([0.0, 0.0, 1.0]))
     if np.linalg.norm(side) < 1.0e-8:
@@ -328,6 +489,7 @@ def build_payload(scene: Path, header: dict, cells: np.memmap,
             "center_cm": (center_native * position_unit).tolist(),
             "axis": axis.tolist(),
             "display_radius_cm": display_radius_cm,
+            "auxiliary_fields": auxiliary_metadata,
         },
         "initial_camera": initial,
         "camera_path": read_camera_path(camera_path, center_native * position_unit,
@@ -372,9 +534,9 @@ HTML_TEMPLATE = r'''<!doctype html>
 :root { color-scheme: dark; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 * { box-sizing: border-box; }
 body { margin: 0; overflow: hidden; background: #07090c; color: #e8edf1; }
-#view { position: fixed; left: 320px; top: 0; width: calc(100vw - 320px); height: 100vh; cursor: grab; }
+#view { position: fixed; left: 360px; top: 0; width: calc(100vw - 360px); height: 100vh; cursor: grab; }
 #view.dragging { cursor: grabbing; }
-#panel { position: fixed; left: 0; top: 0; width: 320px; height: 100vh; overflow-y: auto; padding: 16px; background: #11151a; border-right: 1px solid #303741; }
+#panel { position: fixed; left: 0; top: 0; width: 360px; height: 100vh; overflow-y: auto; padding: 16px; background: #11151a; border-right: 1px solid #303741; }
 h1 { margin: 0 0 14px; font-size: 17px; font-weight: 650; }
 h2 { margin: 19px 0 8px; font-size: 12px; color: #9fb0be; text-transform: uppercase; }
 label { display: block; margin: 8px 0 4px; font-size: 12px; color: #c5cdd3; }
@@ -383,11 +545,17 @@ input[type=range] { min-height: 24px; }
 button { margin-top: 6px; cursor: pointer; }
 button:hover { background: #222b33; }
 .row { display: grid; grid-template-columns: 1fr 1fr; gap: 7px; }
+.row3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 7px; }
+.check { display: flex; align-items: center; gap: 7px; min-height: 31px; }
+.check input { width: 16px; min-height: 16px; }
+.check label { display: inline; margin: 0; }
+.value { float: right; color: #edf2f5; }
+#colorBar { height: 15px; margin-top: 7px; border: 1px solid #3b4651; background: linear-gradient(90deg,#07101c,#29618c,#b8561f,#ffe09e); }
 .meta { font-size: 11px; line-height: 1.55; color: #8fa0ae; overflow-wrap: anywhere; }
 #status { margin-top: 10px; color: #b7c9d5; }
 #timeline { display: none; }
 .hint { position: fixed; right: 14px; bottom: 12px; padding: 6px 8px; background: rgba(8,11,14,.78); color: #a9b6bf; font-size: 11px; }
-@media (max-width: 760px) { #panel { width: 260px; } #view { left: 260px; width: calc(100vw - 260px); } }
+@media (max-width: 760px) { #panel { width: 290px; } #view { left: 290px; width: calc(100vw - 290px); } }
 </style>
 </head>
 <body>
@@ -398,8 +566,24 @@ button:hover { background: #222b33; }
   <h2>Display</h2>
   <label for="channel">Physical channel</label><select id="channel"></select>
   <div id="channelMeta" class="meta"></div>
-  <label for="clipLow">Visible low percentile</label><input id="clipLow" type="range" min="0" max="0.95" value="0" step="0.01">
-  <label for="clipHigh">Visible high percentile</label><input id="clipHigh" type="range" min="0.05" max="1" value="1" step="0.01">
+  <div id="fieldNotice" class="meta"></div>
+  <div class="row">
+    <div><label for="scaleMode">Scale</label><select id="scaleMode"><option value="linear">Linear</option><option value="log10">Log10</option><option value="symlog">Symmetric log</option></select></div>
+    <div><label for="palette">Color map</label><select id="palette"><option value="copper_blue">Copper-blue</option><option value="viridis">Viridis</option><option value="plasma">Plasma</option><option value="magma">Magma</option><option value="inferno">Inferno</option><option value="turbo">Turbo</option><option value="blue_red">Blue-white-red</option><option value="grayscale">Grayscale</option></select></div>
+  </div>
+  <label for="rangePreset">Visible range preset</label><select id="rangePreset"><option value="1,99">1-99 percentile</option><option value="5,95">5-95 percentile</option><option value="0,100">Full range</option><option value="symmetric">Symmetric about zero</option><option value="custom">Custom</option></select>
+  <div class="row">
+    <div><label for="rangeLow">Minimum</label><input id="rangeLow" type="number" step="any"></div>
+    <div><label for="rangeHigh">Maximum</label><input id="rangeHigh" type="number" step="any"></div>
+  </div>
+  <div id="symlogControl"><label for="linthresh">Symmetric-log linear threshold</label><input id="linthresh" type="number" min="1e-30" step="any"></div>
+  <div id="colorBar"></div>
+  <div class="row3">
+    <div><label for="gamma">Gamma <span id="gammaValue" class="value"></span></label><input id="gamma" type="range" min="0.2" max="3" value="1" step="0.05"></div>
+    <div><label for="saturation">Saturation <span id="saturationValue" class="value"></span></label><input id="saturation" type="range" min="0" max="2" value="1" step="0.05"></div>
+    <div><label for="brightness">Brightness <span id="brightnessValue" class="value"></span></label><input id="brightness" type="range" min="0.1" max="3" value="1" step="0.05"></div>
+  </div>
+  <div class="check"><input id="invert" type="checkbox"><label for="invert">Invert color map</label></div>
   <div class="row">
     <div><label for="pointSize">Point size</label><input id="pointSize" type="range" min="1" max="8" value="2.2" step="0.1"></div>
     <div><label for="opacity">Opacity</label><input id="opacity" type="range" min="0.05" max="1" value="0.72" step="0.01"></div>
@@ -442,40 +626,67 @@ function shader(type, source) {
   return value;
 }
 const vertex = shader(gl.VERTEX_SHADER, `
+precision highp float;
 attribute vec3 a_position; attribute float a_value;
 uniform vec3 u_target, u_right, u_up, u_forward;
-uniform float u_scale, u_aspect, u_depth, u_point, u_low, u_high;
+uniform float u_scale, u_aspect, u_depth, u_point, u_domain_low, u_domain_high, u_scale_mode, u_linthresh;
 varying float v_value, v_visible;
+float symlog(float x) { return sign(x) * log(1.0 + abs(x) / u_linthresh) / log(10.0); }
+float transformValue(float x) {
+  if (u_scale_mode < 0.5) return x;
+  if (u_scale_mode < 1.5) return log(max(x, 1.0e-30)) / log(10.0);
+  return symlog(x);
+}
 void main() {
   vec3 rel = a_position - u_target;
   float x = dot(rel, u_right) / (u_scale * u_aspect);
   float y = dot(rel, u_up) / u_scale;
   float z = clamp(dot(rel, u_forward) / u_depth, -0.999, 0.999);
-  v_value = a_value; v_visible = step(u_low, a_value) * step(a_value, u_high);
+  float transformed = transformValue(a_value);
+  float valid = u_scale_mode > 0.5 && u_scale_mode < 1.5 ? step(1.0e-30, a_value) : 1.0;
+  v_value = clamp((transformed-u_domain_low)/max(u_domain_high-u_domain_low,1.0e-30),0.0,1.0);
+  v_visible = valid * step(u_domain_low, transformed) * step(transformed, u_domain_high);
   gl_Position = v_visible > 0.5 ? vec4(x, y, z, 1.0) : vec4(2.0, 2.0, 1.0, 1.0);
   gl_PointSize = u_point;
 }`);
 const fragment = shader(gl.FRAGMENT_SHADER, `
 precision mediump float; varying float v_value, v_visible;
-uniform float u_opacity, u_diverging;
-vec3 sequential(float t) {
+uniform float u_opacity, u_palette, u_gamma, u_invert, u_saturation, u_brightness;
+vec3 copperBlue(float t) {
   vec3 a=vec3(0.025,0.055,0.10), b=vec3(0.16,0.38,0.55), c=vec3(0.72,0.34,0.12), d=vec3(1.0,0.88,0.62);
   return t<0.34 ? mix(a,b,t/0.34) : (t<0.72 ? mix(b,c,(t-0.34)/0.38) : mix(c,d,(t-0.72)/0.28));
 }
-vec3 diverging(float t) {
+vec3 blueRed(float t) {
   vec3 blue=vec3(0.12,0.42,0.88), mid=vec3(0.82,0.85,0.84), red=vec3(0.88,0.30,0.10);
   return t<0.5 ? mix(blue,mid,t*2.0) : mix(mid,red,(t-0.5)*2.0);
 }
+vec3 stops5(float t, vec3 a, vec3 b, vec3 c, vec3 d, vec3 e) {
+  return t<0.25?mix(a,b,t*4.0):(t<0.5?mix(b,c,(t-.25)*4.0):(t<0.75?mix(c,d,(t-.5)*4.0):mix(d,e,(t-.75)*4.0)));
+}
+vec3 palette(float t) {
+  if (u_palette < 0.5) return copperBlue(t);
+  if (u_palette < 1.5) return stops5(t,vec3(.267,.005,.329),vec3(.230,.322,.546),vec3(.128,.567,.551),vec3(.369,.789,.383),vec3(.993,.906,.144));
+  if (u_palette < 2.5) return stops5(t,vec3(.050,.030,.528),vec3(.494,.012,.658),vec3(.798,.280,.470),vec3(.973,.586,.252),vec3(.940,.975,.131));
+  if (u_palette < 3.5) return stops5(t,vec3(.001,.000,.014),vec3(.251,.038,.403),vec3(.550,.161,.506),vec3(.868,.288,.409),vec3(.987,.991,.750));
+  if (u_palette < 4.5) return stops5(t,vec3(.002,.001,.014),vec3(.258,.039,.406),vec3(.578,.148,.404),vec3(.865,.317,.226),vec3(.988,.998,.645));
+  if (u_palette < 5.5) return stops5(t,vec3(.190,.072,.232),vec3(.160,.733,.925),vec3(.638,.991,.236),vec3(.976,.588,.093),vec3(.480,.016,.010));
+  if (u_palette < 6.5) return blueRed(t);
+  return vec3(t);
+}
 void main() {
   if (v_visible < 0.5 || length(gl_PointCoord-vec2(0.5)) > 0.5) discard;
-  vec3 color = u_diverging > 0.5 ? diverging(v_value) : sequential(v_value);
+  float t = u_invert > 0.5 ? 1.0-v_value : v_value;
+  t = pow(clamp(t,0.0,1.0),1.0/max(u_gamma,0.01));
+  vec3 color = palette(t);
+  float luma = dot(color,vec3(.2126,.7152,.0722));
+  color = clamp(mix(vec3(luma),color,u_saturation)*u_brightness,0.0,1.0);
   gl_FragColor = vec4(color, u_opacity);
 }`);
 const program = gl.createProgram(); gl.attachShader(program, vertex); gl.attachShader(program, fragment); gl.linkProgram(program);
 if (!gl.getProgramParameter(program, gl.LINK_STATUS)) throw new Error(gl.getProgramInfoLog(program));
 gl.useProgram(program);
 const locations = {};
-for (const name of ['target','right','up','forward','scale','aspect','depth','point','low','high','opacity','diverging'])
+for (const name of ['target','right','up','forward','scale','aspect','depth','point','domain_low','domain_high','scale_mode','linthresh','opacity','palette','gamma','invert','saturation','brightness'])
   locations[name] = gl.getUniformLocation(program, 'u_'+name);
 const positionBuffer=gl.createBuffer(); gl.bindBuffer(gl.ARRAY_BUFFER,positionBuffer); gl.bufferData(gl.ARRAY_BUFFER,decodeFloat32(DATA.positions),gl.STATIC_DRAW);
 const positionLocation=gl.getAttribLocation(program,'a_position'); gl.enableVertexAttribArray(positionLocation); gl.vertexAttribPointer(positionLocation,3,gl.FLOAT,false,0,0);
@@ -491,15 +702,29 @@ function persistKeyframes(){try{localStorage.setItem(KEYFRAME_STORAGE,JSON.strin
 let keyframes=storedKeyframes(), dragging=false, last=[0,0], panMode=false, playing=null;
 function setCamera(entry) { camera.target=[...entry.target]; camera.scale=entry.scale; Object.assign(camera,cleanBasis(entry.forward,entry.up)); }
 function resize(){const ratio=devicePixelRatio||1,w=Math.floor(canvas.clientWidth*ratio),h=Math.floor(canvas.clientHeight*ratio);if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;gl.viewport(0,0,w,h);} }
-function render(){resize();gl.clearColor(0.015,0.022,0.03,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.uniform3fv(locations.target,camera.target);gl.uniform3fv(locations.right,camera.right);gl.uniform3fv(locations.up,camera.up);gl.uniform3fv(locations.forward,camera.forward);gl.uniform1f(locations.scale,camera.scale);gl.uniform1f(locations.aspect,canvas.width/canvas.height);gl.uniform1f(locations.depth,4.0);gl.uniform1f(locations.point,+pointSize.value*(devicePixelRatio||1));gl.uniform1f(locations.low,+clipLow.value);gl.uniform1f(locations.high,+clipHigh.value);gl.uniform1f(locations.opacity,+opacity.value);gl.drawArrays(gl.POINTS,0,DATA.point_count);zoomReadout.textContent=`screen half extent ${(camera.scale*DATA.scene.display_radius_cm).toExponential(3)} cm (${camera.scale.toExponential(3)} scene radii)`;requestAnimationFrame(render);}
-function loadChannel(name){const item=DATA.channels[name];gl.bindBuffer(gl.ARRAY_BUFFER,valueBuffer);gl.bufferData(gl.ARRAY_BUFFER,decodeFloat32(item.values),gl.STATIC_DRAW);gl.vertexAttribPointer(valueLocation,1,gl.FLOAT,false,0,0);gl.uniform1f(locations.diverging,item.diverging?1:0);channelMeta.textContent=`${item.label}; display range ${item.low.toPrecision(4)} to ${item.high.toPrecision(4)}`;}
-const channel=document.getElementById('channel'),channelMeta=document.getElementById('channelMeta'),pointSize=document.getElementById('pointSize'),opacity=document.getElementById('opacity'),clipLow=document.getElementById('clipLow'),clipHigh=document.getElementById('clipHigh');
+const paletteIds={copper_blue:0,viridis:1,plasma:2,magma:3,inferno:4,turbo:5,blue_red:6,grayscale:7};
+const paletteGradients={copper_blue:'#07101c,#29618c,#b8561f,#ffe09e',viridis:'#440154,#3b528b,#21918c,#5ec962,#fde725',plasma:'#0d0887,#7e03a8,#cc4778,#f89540,#f0f921',magma:'#000004,#3b0f70,#8c2981,#de4968,#fcfdbf',inferno:'#000004,#420a68,#932667,#dd513a,#fcffa4',turbo:'#30123b,#28bbec,#a4fc3c,#f9a31b,#7a0403',blue_red:'#1f6be0,#d1d9d6,#e04c1a',grayscale:'#000,#fff'};
+const scaleIds={linear:0,log10:1,symlog:2};
+function transformValue(value){if(scaleMode.value==='log10')return Math.log10(Math.max(value,1e-30));if(scaleMode.value==='symlog')return Math.sign(value)*Math.log10(1+Math.abs(value)/Math.max(+linthresh.value,1e-30));return value;}
+function safeRange(){let low=+rangeLow.value,high=+rangeHigh.value;if(scaleMode.value==='log10'){low=Math.max(low,currentChannel.positive_min??1e-30);high=Math.max(high,low*(1+1e-6));}if(!(high>low))high=low+Math.max(Math.abs(low)*1e-6,1e-30);return [low,high];}
+function updateColorBar(){const gradient=paletteGradients[palette.value];colorBar.style.background=`linear-gradient(90deg,${invert.checked?gradient.split(',').reverse().join(','):gradient})`;}
+function updateChannelMeta(){const [low,high]=safeRange();channelMeta.textContent=`${currentChannel.label} [${currentChannel.units}] | data ${currentChannel.data_min.toPrecision(5)} to ${currentChannel.data_max.toPrecision(5)} | visible ${low.toPrecision(5)} to ${high.toPrecision(5)}`;}
+function applyPreset(){if(rangePreset.value==='custom')return;let low,high;if(rangePreset.value==='symmetric'){const bound=Math.max(Math.abs(currentChannel.percentiles[1]),Math.abs(currentChannel.percentiles[99]));low=-bound;high=bound;}else{const [a,b]=rangePreset.value.split(',').map(Number);low=currentChannel.percentiles[a];high=currentChannel.percentiles[b];}if(scaleMode.value==='log10'&&low<=0)low=currentChannel.positive_min??1e-30;rangeLow.value=low;rangeHigh.value=high;updateChannelMeta();}
+function render(){resize();const [low,high]=safeRange();gl.clearColor(0.015,0.022,0.03,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.uniform3fv(locations.target,camera.target);gl.uniform3fv(locations.right,camera.right);gl.uniform3fv(locations.up,camera.up);gl.uniform3fv(locations.forward,camera.forward);gl.uniform1f(locations.scale,camera.scale);gl.uniform1f(locations.aspect,canvas.width/canvas.height);gl.uniform1f(locations.depth,4.0);gl.uniform1f(locations.point,+pointSize.value*(devicePixelRatio||1));gl.uniform1f(locations.domain_low,transformValue(low));gl.uniform1f(locations.domain_high,transformValue(high));gl.uniform1f(locations.scale_mode,scaleIds[scaleMode.value]);gl.uniform1f(locations.linthresh,Math.max(+linthresh.value,1e-30));gl.uniform1f(locations.opacity,+opacity.value);gl.uniform1f(locations.palette,paletteIds[palette.value]);gl.uniform1f(locations.gamma,+gamma.value);gl.uniform1f(locations.invert,invert.checked?1:0);gl.uniform1f(locations.saturation,+saturation.value);gl.uniform1f(locations.brightness,+brightness.value);gl.drawArrays(gl.POINTS,0,DATA.point_count);zoomReadout.textContent=`screen half extent ${(camera.scale*DATA.scene.display_radius_cm).toExponential(3)} cm (${camera.scale.toExponential(3)} scene radii)`;requestAnimationFrame(render);}
+function loadChannel(name){currentChannel=DATA.channels[name];gl.bindBuffer(gl.ARRAY_BUFFER,valueBuffer);gl.bufferData(gl.ARRAY_BUFFER,decodeFloat32(currentChannel.values),gl.STATIC_DRAW);gl.vertexAttribPointer(valueLocation,1,gl.FLOAT,false,0,0);scaleMode.value=currentChannel.default_scale;palette.value=currentChannel.default_palette;linthresh.value=currentChannel.linthresh;rangeLow.value=currentChannel.default_low;rangeHigh.value=currentChannel.default_high;rangePreset.value=currentChannel.diverging?'symmetric':'1,99';symlogControl.style.display=scaleMode.value==='symlog'?'block':'none';updateColorBar();updateChannelMeta();}
+const channel=document.getElementById('channel'),channelMeta=document.getElementById('channelMeta'),fieldNotice=document.getElementById('fieldNotice'),pointSize=document.getElementById('pointSize'),opacity=document.getElementById('opacity'),scaleMode=document.getElementById('scaleMode'),palette=document.getElementById('palette'),rangePreset=document.getElementById('rangePreset'),rangeLow=document.getElementById('rangeLow'),rangeHigh=document.getElementById('rangeHigh'),linthresh=document.getElementById('linthresh'),symlogControl=document.getElementById('symlogControl'),gamma=document.getElementById('gamma'),saturation=document.getElementById('saturation'),brightness=document.getElementById('brightness'),invert=document.getElementById('invert'),colorBar=document.getElementById('colorBar'),gammaValue=document.getElementById('gammaValue'),saturationValue=document.getElementById('saturationValue'),brightnessValue=document.getElementById('brightnessValue');
 const sceneMeta=document.getElementById('sceneMeta'),statusText=document.getElementById('status'),snapshotInput=document.getElementById('snapshot'),poseCountText=document.getElementById('poseCount');
 const resetButton=document.getElementById('reset'),fitButton=document.getElementById('fit'),rollLeftButton=document.getElementById('rollLeft'),rollRightButton=document.getElementById('rollRight');
 const zoomInButton=document.getElementById('zoomIn'),zoomOutButton=document.getElementById('zoomOut'),zoomReadout=document.getElementById('zoomReadout');
 const addPoseButton=document.getElementById('addPose'),copyPoseButton=document.getElementById('copyPose'),downloadButton=document.getElementById('download'),clearPosesButton=document.getElementById('clearPoses');
 const timelinePanel=document.getElementById('timeline'),pathSlider=document.getElementById('pathSlider'),pathStatus=document.getElementById('pathStatus'),playButton=document.getElementById('play'),stopButton=document.getElementById('stop');
+let currentChannel=null;
 for(const name of Object.keys(DATA.channels)){const option=document.createElement('option');option.value=name;option.textContent=name.replaceAll('_',' ');channel.appendChild(option);} channel.value='rotational_fraction';loadChannel(channel.value);channel.onchange=()=>loadChannel(channel.value);
+fieldNotice.textContent=DATA.scene.auxiliary_fields?`Auxiliary fields loaded: ${DATA.scene.auxiliary_fields.fields.join(', ')} | ${DATA.scene.auxiliary_fields.sha256.slice(0,12)}`:'Magnetic field, pressure, and entropy are unavailable because this v052 scene has no auxiliary field sidecar.';
+scaleMode.onchange=()=>{symlogControl.style.display=scaleMode.value==='symlog'?'block':'none';if(scaleMode.value==='log10'&&+rangeLow.value<=0)rangeLow.value=currentChannel.positive_min??1e-30;updateChannelMeta();};
+palette.onchange=updateColorBar;invert.onchange=updateColorBar;rangePreset.onchange=applyPreset;
+for(const input of [rangeLow,rangeHigh,linthresh])input.oninput=()=>{rangePreset.value='custom';updateChannelMeta();};
+for(const [input,output] of [[gamma,gammaValue],[saturation,saturationValue],[brightness,brightnessValue]]){const update=()=>output.textContent=(+input.value).toFixed(2);input.oninput=update;update();}
 document.getElementById('sceneMeta').textContent=`snapshot ${DATA.scene.snapshot ?? 'unknown'} | ${DATA.point_count.toLocaleString()} / ${DATA.scene.num_cells.toLocaleString()} cells | radius ${DATA.scene.display_radius_cm.toExponential(3)} cm | scene ${DATA.scene.sha256.slice(0,12)}`;
 if(DATA.scene.snapshot !== null) snapshotInput.value=DATA.scene.snapshot;
 canvas.oncontextmenu=e=>e.preventDefault();canvas.onpointerdown=e=>{dragging=true;canvas.classList.add('dragging');last=[e.clientX,e.clientY];panMode=e.shiftKey||e.button===2;canvas.setPointerCapture(e.pointerId);};canvas.onpointerup=e=>{dragging=false;canvas.classList.remove('dragging');canvas.releasePointerCapture(e.pointerId);};canvas.onpointermove=e=>{if(!dragging)return;const dx=e.clientX-last[0],dy=e.clientY-last[1];last=[e.clientX,e.clientY];if(panMode){camera.target=V.add(camera.target,V.add(V.scale(camera.right,-dx*camera.scale*0.0025),V.scale(camera.up,dy*camera.scale*0.0025)));}else{let f=rotate(camera.forward,camera.up,-dx*0.006),r=V.unit(V.cross(f,camera.up));f=rotate(f,r,-dy*0.006);let u=rotate(camera.up,r,-dy*0.006);Object.assign(camera,cleanBasis(f,u));}};
@@ -546,6 +771,8 @@ def main(argv: list[str] | None = None) -> int:
                         help="Trusted manifest hash; otherwise the scene is hashed")
     parser.add_argument("--camera-path", type=Path,
                         help="Optional v055 path to expose on the playback timeline")
+    parser.add_argument("--field-sidecar", type=Path,
+                        help="Optional particle-ID-bound magnetic/thermodynamic NPZ")
     args = parser.parse_args(argv)
     if args.max_points < 1000:
         parser.error("--max-points must be at least 1000")
@@ -556,12 +783,15 @@ def main(argv: list[str] | None = None) -> int:
         cells = read_cells(args.scene, header)
         center_native, inferred_axis = infer_center_axis(cells, header, center, axis)
         selected = sample_cells(cells, args.max_points)
+        field_sidecar = read_field_sidecar(args.field_sidecar) \
+            if args.field_sidecar is not None else None
         digest = args.scene_sha256 or sha256(args.scene)
         if len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest.lower()):
             raise ValueError("--scene-sha256 must be a 64-character hexadecimal digest")
         payload = build_payload(args.scene, header, cells, selected, center_native,
                                 inferred_axis, args.display_radius_cm,
-                                digest.lower(), args.snapshot, args.camera_path)
+                                digest.lower(), args.snapshot, args.camera_path,
+                                field_sidecar)
         write_html(args.output, payload)
     except (ValueError, OSError) as error:
         print(f"stellar_scene_camera_lab: {error}", file=sys.stderr)

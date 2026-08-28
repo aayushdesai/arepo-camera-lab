@@ -7,14 +7,14 @@ from pathlib import Path
 import sys
 import webbrowser
 
-from . import demo, server, spline, viewer
+from . import demo, fields, server, spline, viewer
 
 
 def _serve(args: argparse.Namespace) -> int:
     state = server.ViewerState()
     if args.scene is not None:
         state.start_load(args.scene, args.snapshot, args.max_points,
-                         args.scene_sha256)
+                         args.scene_sha256, args.field_sidecar)
     if not args.no_browser:
         webbrowser.open(f"http://127.0.0.1:{args.port}")
     server.run_server(state, args.port)
@@ -39,6 +39,8 @@ def _build(args: argparse.Namespace) -> int:
         command += ["--snapshot", str(args.snapshot)]
     if args.camera_path is not None:
         command += ["--camera-path", str(args.camera_path)]
+    if args.field_sidecar is not None:
+        command += ["--field-sidecar", str(args.field_sidecar)]
     return viewer.main(command)
 
 
@@ -62,6 +64,8 @@ def parser() -> argparse.ArgumentParser:
                        help="Cell points to display; zero loads every cell")
     serve.add_argument("--scene-sha256",
                        help="Trusted manifest digest; otherwise hash the complete scene")
+    serve.add_argument("--field-sidecar", type=Path,
+                       help="Optional ID-bound NPZ with B, pressure, entropy, or sound speed")
     serve.add_argument("--port", type=int, default=8765)
     serve.add_argument("--no-browser", action="store_true")
     serve.set_defaults(function=_serve)
@@ -73,6 +77,7 @@ def parser() -> argparse.ArgumentParser:
     build.add_argument("--max-points", type=int, default=400_000,
                        help="Cell points to display; zero is reserved for live-server all-cells mode")
     build.add_argument("--camera-path", type=Path)
+    build.add_argument("--field-sidecar", type=Path)
     build.set_defaults(function=_build)
 
     spline_parser = commands.add_parser("spline", help="Compile saved camera poses")
@@ -84,6 +89,11 @@ def parser() -> argparse.ArgumentParser:
     spline_parser.add_argument("--diagnostics", type=Path, required=True)
     spline_parser.add_argument("--tension", type=float, default=0.25)
     spline_parser.set_defaults(function=_spline)
+
+    fields_parser = commands.add_parser(
+        "fields", help="Build an explicit physical-field sidecar from HDF5")
+    fields.add_arguments(fields_parser)
+    fields_parser.set_defaults(function=fields.run)
 
     demo_parser = commands.add_parser("demo", help="Generate and open a synthetic disk/outflow scene")
     demo_parser.add_argument("--output", type=Path, default=Path("arepo-camera-lab-demo-v052.bin"))

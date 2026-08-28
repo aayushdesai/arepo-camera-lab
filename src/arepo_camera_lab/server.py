@@ -26,14 +26,15 @@ APP_HTML = r'''<!doctype html>
 :root { color-scheme: dark; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 * { box-sizing: border-box; }
 body { margin: 0; background: #090c10; color: #e9eef2; overflow: hidden; }
-header { height: 64px; display: grid; grid-template-columns: minmax(260px,1fr) 106px 162px 92px; gap: 8px; align-items: center; padding: 10px 12px; border-bottom: 1px solid #303842; background: #12171d; }
+header { height: 104px; display: grid; grid-template-columns: minmax(260px,1fr) 106px 162px 92px; grid-template-rows: 38px 38px; gap: 8px; align-items: center; padding: 10px 12px; border-bottom: 1px solid #303842; background: #12171d; }
 input, button { height: 38px; min-width: 0; border: 1px solid #3d4853; border-radius: 4px; background: #181f26; color: #eef3f6; padding: 0 10px; }
 button { cursor: pointer; font-weight: 650; }
 button:hover { background: #242d35; }
-#statusBand { position: fixed; top: 64px; left: 0; right: 0; z-index: 2; height: 28px; display: grid; grid-template-columns: 1fr 220px; gap: 12px; align-items: center; padding: 4px 12px; background: rgba(8,11,14,.94); color: #a9bac5; font-size: 11px; }
+#fields { grid-column: 1 / -1; }
+#statusBand { position: fixed; top: 104px; left: 0; right: 0; z-index: 2; height: 28px; display: grid; grid-template-columns: 1fr 220px; gap: 12px; align-items: center; padding: 4px 12px; background: rgba(8,11,14,.94); color: #a9bac5; font-size: 11px; }
 #progress { width: 100%; height: 9px; accent-color: #62a8cf; }
-iframe { position: fixed; top: 92px; left: 0; width: 100vw; height: calc(100vh - 92px); border: 0; background: #07090c; }
-@media (max-width: 850px) { header { height: 112px; grid-template-columns: 1fr 1fr; } #statusBand { top: 112px; } iframe { top: 140px; height: calc(100vh - 140px); } #scene { grid-column: 1 / -1; } }
+iframe { position: fixed; top: 132px; left: 0; width: 100vw; height: calc(100vh - 132px); border: 0; background: #07090c; }
+@media (max-width: 850px) { header { height: 152px; grid-template-columns: 1fr 1fr; grid-template-rows: 38px 38px 38px; } #scene, #fields { grid-column: 1 / -1; } #statusBand { top: 152px; } iframe { top: 180px; height: calc(100vh - 180px); } }
 </style>
 </head>
 <body>
@@ -42,14 +43,15 @@ iframe { position: fixed; top: 92px; left: 0; width: 100vw; height: calc(100vh -
   <input id="snapshot" aria-label="Snapshot number" type="number" min="0" placeholder="snapshot">
   <input id="points" aria-label="Cell point budget; zero loads all cells" type="number" min="0" step="10000" value="400000" placeholder="points; 0 = all cells">
   <button id="load">Load scene</button>
+  <input id="fields" aria-label="Optional physical-field sidecar" placeholder="optional /absolute/path/to/snapshot.fields.npz for B, pressure, entropy">
 </header>
 <div id="statusBand"><span id="status">Enter a portable v052 full-cell scene path. Files stay on this computer.</span><progress id="progress" max="1" value="0"></progress></div>
 <iframe id="viewer" title="Interactive AREPO camera viewer" src="/viewer"></iframe>
 <script>
-const scene=document.getElementById('scene'),snapshot=document.getElementById('snapshot'),points=document.getElementById('points'),status=document.getElementById('status'),progress=document.getElementById('progress'),frame=document.getElementById('viewer'),load=document.getElementById('load');
+const scene=document.getElementById('scene'),fields=document.getElementById('fields'),snapshot=document.getElementById('snapshot'),points=document.getElementById('points'),status=document.getElementById('status'),progress=document.getElementById('progress'),frame=document.getElementById('viewer'),load=document.getElementById('load');
 let displayedRevision=-1;
-async function refresh(){try{const response=await fetch('/api/status',{cache:'no-store'}),data=await response.json();load.disabled=Boolean(data.loading);progress.value=data.progress??0;if(data.loading){status.textContent=`${data.message} (${Math.round((data.progress??0)*100)}%)`;return;}if(data.error){status.textContent='Load failed: '+data.error;return;}if(data.loaded){scene.value=data.scene_path;snapshot.value=data.snapshot??'';points.value=data.requested_points===0?0:data.point_count;status.textContent=`Ready: ${data.point_count.toLocaleString()} of ${data.num_cells.toLocaleString()} cells from snapshot ${data.snapshot??'unknown'}.`;progress.value=1;if(data.revision!==displayedRevision){displayedRevision=data.revision;frame.src='/viewer?revision='+data.revision;}}}catch(error){status.textContent='Status error: '+error.message;}}
-load.onclick=async()=>{load.disabled=true;status.textContent='Queueing scene load...';progress.value=0;try{const response=await fetch('/api/load',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:scene.value,snapshot:snapshot.value===''?null:+snapshot.value,max_points:+points.value})}),data=await response.json();if(!response.ok)throw new Error(data.error||'load failed');}catch(error){status.textContent='Load failed: '+error.message;load.disabled=false;}};
+async function refresh(){try{const response=await fetch('/api/status',{cache:'no-store'}),data=await response.json();load.disabled=Boolean(data.loading);progress.value=data.progress??0;if(data.loading){status.textContent=`${data.message} (${Math.round((data.progress??0)*100)}%)`;return;}if(data.error){status.textContent='Load failed: '+data.error;return;}if(data.loaded){scene.value=data.scene_path;fields.value=data.field_sidecar_path??'';snapshot.value=data.snapshot??'';points.value=data.requested_points===0?0:data.point_count;status.textContent=`Ready: ${data.point_count.toLocaleString()} of ${data.num_cells.toLocaleString()} cells from snapshot ${data.snapshot??'unknown'}${data.field_sidecar_path?' with auxiliary fields':''}.`;progress.value=1;if(data.revision!==displayedRevision){displayedRevision=data.revision;frame.src='/viewer?revision='+data.revision;}}}catch(error){status.textContent='Status error: '+error.message;}}
+load.onclick=async()=>{load.disabled=true;status.textContent='Queueing scene load...';progress.value=0;try{const response=await fetch('/api/load',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({path:scene.value,field_sidecar:fields.value||null,snapshot:snapshot.value===''?null:+snapshot.value,max_points:+points.value})}),data=await response.json();if(!response.ok)throw new Error(data.error||'load failed');}catch(error){status.textContent='Load failed: '+error.message;load.disabled=false;}};
 scene.onkeydown=e=>{if(e.key==='Enter')load.click();};
 refresh();setInterval(refresh,400);
 </script>
@@ -62,6 +64,7 @@ class ViewerState:
     payload: dict[str, Any] | None = None
     html: str | None = None
     scene_path: Path | None = None
+    field_sidecar_path: Path | None = None
     lock: threading.Lock = field(default_factory=threading.Lock)
     progress: dict[str, Any] = field(default_factory=lambda: {
         "loaded": False, "loading": False, "progress": 0.0,
@@ -89,7 +92,8 @@ class ViewerState:
                                   "message": message, "error": None, **fields})
 
     def load(self, path: Path, snapshot: int | None, max_points: int,
-             scene_sha256: str | None = None) -> dict[str, Any]:
+             scene_sha256: str | None = None,
+             field_sidecar_path: Path | None = None) -> dict[str, Any]:
         path, scene_sha256 = self._validate_request(path, max_points, scene_sha256)
         try:
             self._phase(0.03, "Reading scene header", requested_points=max_points,
@@ -108,9 +112,11 @@ class ViewerState:
             else:
                 self._phase(0.58, "Using the supplied verified scene hash")
             self._phase(0.64, "Deriving physical display channels")
+            field_sidecar = viewer.read_field_sidecar(field_sidecar_path) \
+                if field_sidecar_path is not None else None
             payload = viewer.build_payload(
                 path, header, cells, selected, center, axis, None,
-                scene_sha256, snapshot, None)
+                scene_sha256, snapshot, None, field_sidecar)
             self._phase(0.90, "Encoding browser buffers and viewer HTML")
             encoded = json.dumps(payload, separators=(",", ":"), allow_nan=False)
             html = viewer.HTML_TEMPLATE.replace("__PAYLOAD__", encoded)
@@ -119,6 +125,7 @@ class ViewerState:
                 self.payload = payload
                 self.html = html
                 self.scene_path = path
+                self.field_sidecar_path = field_sidecar_path
                 self.progress = {
                     "loaded": True, "loading": False, "progress": 1.0,
                     "message": "Scene ready", "error": None,
@@ -132,8 +139,13 @@ class ViewerState:
             raise
 
     def start_load(self, path: Path, snapshot: int | None, max_points: int,
-                   scene_sha256: str | None = None) -> dict[str, Any]:
+                   scene_sha256: str | None = None,
+                   field_sidecar_path: Path | None = None) -> dict[str, Any]:
         path, scene_sha256 = self._validate_request(path, max_points, scene_sha256)
+        if field_sidecar_path is not None:
+            field_sidecar_path = field_sidecar_path.expanduser().resolve()
+            if not field_sidecar_path.is_file():
+                raise ValueError(f"field sidecar does not exist: {field_sidecar_path}")
         with self.lock:
             if self.progress.get("loading"):
                 raise ValueError("another scene load is already in progress")
@@ -144,7 +156,8 @@ class ViewerState:
             queued = dict(self.progress)
         def work() -> None:
             try:
-                self.load(path, snapshot, max_points, scene_sha256)
+                self.load(path, snapshot, max_points, scene_sha256,
+                          field_sidecar_path)
             except Exception:
                 pass
         self.worker = threading.Thread(target=work, name="arepo-camera-loader",
@@ -163,6 +176,8 @@ class ViewerState:
                     "point_count": self.payload["point_count"],
                     "num_cells": scene["num_cells"],
                     "scene_sha256": scene["sha256"],
+                    "field_sidecar_path": str(self.field_sidecar_path) \
+                        if self.field_sidecar_path is not None else None,
                 })
             return result
 
@@ -215,7 +230,9 @@ def _handler(state: ViewerState) -> type[BaseHTTPRequestHandler]:
                 snapshot = None if snapshot_value is None else int(snapshot_value)
                 result = state.start_load(
                     path, snapshot, int(request.get("max_points", 400_000)),
-                    request.get("scene_sha256"))
+                    request.get("scene_sha256"),
+                    Path(str(request["field_sidecar"]))
+                    if request.get("field_sidecar") else None)
                 self._json(HTTPStatus.ACCEPTED, result)
             except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as error:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})
