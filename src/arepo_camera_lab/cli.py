@@ -8,7 +8,7 @@ import sys
 import webbrowser
 
 from . import catalog as scene_catalog
-from . import cleanup, demo, fields, gallery, routes, server, spline, viewer, vtk_backend
+from . import cleanup, demo, fields, gallery, review, routes, server, spline, viewer, vtk_backend
 
 
 def _serve(args: argparse.Namespace) -> int:
@@ -23,9 +23,28 @@ def _serve(args: argparse.Namespace) -> int:
     if args.catalog is not None:
         state.catalog = scene_catalog.load_catalog(args.catalog)
         state.cache_directory = args.cache_directory.expanduser().resolve()
+        if args.pose_bundle is not None:
+            state.review_bundle = review.load_bundle(
+                args.pose_bundle, args.pose_bundle_sha256)
+            review.validate_catalog_bindings(state.review_bundle, state.catalog)
         selected = args.snapshot if args.snapshot is not None else min(state.catalog.frames)
-        state.start_catalog_load(selected, args.max_points)
+        requested_pose_id = args.pose_id
+        if state.review_bundle is not None and requested_pose_id is None:
+            requested_pose_id = next((
+                pose["pose_id"]
+                for pose in state.review_bundle["geometry"]["alternatives"]
+                if int(pose["snapshot"]) == int(selected)), None)
+        if requested_pose_id is not None and state.review_bundle is not None:
+            matching = [pose for pose in state.review_bundle["geometry"]["alternatives"]
+                        if pose["pose_id"] == requested_pose_id]
+            if not matching:
+                raise ValueError(f"pose ID is absent from bundle: {requested_pose_id}")
+            selected = int(matching[0]["snapshot"])
+        state.start_catalog_load(
+            selected, args.max_points, requested_pose_id=requested_pose_id)
     elif args.scene is not None:
+        if args.pose_bundle is not None:
+            raise ValueError("serve --pose-bundle requires --catalog for cross-snapshot loading")
         state.start_load(args.scene, args.snapshot, args.max_points,
                          args.scene_sha256, args.field_sidecar)
     if not args.no_browser:
@@ -95,6 +114,14 @@ def parser() -> argparse.ArgumentParser:
                        help="Trusted manifest digest; otherwise hash the complete scene")
     serve.add_argument("--field-sidecar", type=Path,
                        help="Optional ID-bound NPZ with B, pressure, entropy, or sound speed")
+    serve.add_argument(
+        "--pose-bundle", type=Path,
+        help="Immutable v001 camera alternatives or v002 reviewed bundle to restore")
+    serve.add_argument(
+        "--pose-bundle-sha256",
+        help="Required SHA-256 for an exact imported pose bundle")
+    serve.add_argument(
+        "--pose-id", help="Initial exact pose ID from --pose-bundle")
     serve.add_argument(
         "--cache-directory", type=Path,
         default=Path.home() / ".cache/arepo-camera-lab",

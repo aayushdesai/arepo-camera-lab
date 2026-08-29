@@ -11,7 +11,7 @@ from pathlib import Path
 import threading
 from typing import Any
 
-from . import viewer
+from . import review, viewer
 from .catalog import SceneCatalog
 from .cleanup import CachedInput
 from .transfer import acquire_verified_file
@@ -92,6 +92,8 @@ class ViewerState:
         default_factory=lambda: Path.home() / ".local/share/arepo-camera-lab/session")
     cached_inputs: dict[Path, CachedInput] = field(default_factory=dict)
     cleanup_configured: bool = False
+    review_bundle: dict[str, Any] | None = None
+    requested_pose_id: str | None = None
 
     @staticmethod
     def _validate_request(path: Path, max_points: int,
@@ -115,7 +117,8 @@ class ViewerState:
 
     def load(self, path: Path, snapshot: int | None, max_points: int,
              scene_sha256: str | None = None,
-             field_sidecar_path: Path | None = None) -> dict[str, Any]:
+             field_sidecar_path: Path | None = None,
+             requested_pose_id: str | None = None) -> dict[str, Any]:
         path, scene_sha256 = self._validate_request(path, max_points, scene_sha256)
         try:
             self._phase(0.03, "Reading scene header", requested_points=max_points,
@@ -139,6 +142,10 @@ class ViewerState:
             payload = viewer.build_payload(
                 path, header, cells, selected, center, axis, None,
                 scene_sha256, snapshot, None, field_sidecar)
+            payload["scene"]["point_budget"] = max_points
+            if self.review_bundle is not None:
+                payload["review_workspace"] = review.public_workspace(
+                    self.review_bundle, self.catalog, requested_pose_id)
             self._phase(0.90, "Encoding browser buffers and viewer HTML")
             encoded = json.dumps(payload, separators=(",", ":"), allow_nan=False)
             html = viewer.HTML_TEMPLATE.replace("__PAYLOAD__", encoded)
@@ -148,6 +155,7 @@ class ViewerState:
                 self.html = html
                 self.scene_path = path
                 self.field_sidecar_path = field_sidecar_path
+                self.requested_pose_id = requested_pose_id
                 self.progress = {
                     "loaded": True, "loading": False, "progress": 1.0,
                     "message": "Scene ready", "error": None,
@@ -162,7 +170,8 @@ class ViewerState:
 
     def start_load(self, path: Path, snapshot: int | None, max_points: int,
                    scene_sha256: str | None = None,
-                   field_sidecar_path: Path | None = None) -> dict[str, Any]:
+                   field_sidecar_path: Path | None = None,
+                   requested_pose_id: str | None = None) -> dict[str, Any]:
         path, scene_sha256 = self._validate_request(path, max_points, scene_sha256)
         if field_sidecar_path is not None:
             field_sidecar_path = field_sidecar_path.expanduser().resolve()
@@ -179,7 +188,7 @@ class ViewerState:
         def work() -> None:
             try:
                 self.load(path, snapshot, max_points, scene_sha256,
-                          field_sidecar_path)
+                          field_sidecar_path, requested_pose_id)
             except Exception:
                 pass
         self.worker = threading.Thread(target=work, name="arepo-camera-loader",
@@ -187,7 +196,8 @@ class ViewerState:
         self.worker.start()
         return queued
 
-    def start_catalog_load(self, snapshot: int, max_points: int) -> dict[str, Any]:
+    def start_catalog_load(self, snapshot: int, max_points: int,
+                           requested_pose_id: str | None = None) -> dict[str, Any]:
         if self.catalog is None:
             raise ValueError("no snapshot catalog is configured")
         try:
@@ -230,7 +240,7 @@ class ViewerState:
                         sidecar_path, frame.field_sidecar_source,
                         frame.field_sidecar_sha256)
                 self.load(scene_path, snapshot, max_points, frame.scene_sha256,
-                          sidecar_path)
+                          sidecar_path, requested_pose_id)
             except Exception as error:
                 with self.lock:
                     self.progress.update({
@@ -305,6 +315,25 @@ class ViewerState:
             return path
         raise FileExistsError("camera-pose numbering is exhausted")
 
+    def save_review_bundle(self, payload: dict[str, Any]) -> Path:
+        if self.review_bundle is None:
+            raise ValueError("restart the server with --pose-bundle before saving reviews")
+        normalized = review.normalize_bundle(payload)
+        expected = self.review_bundle["geometry_fingerprint_sha256"]
+        if normalized["geometry_fingerprint_sha256"] != expected:
+            raise ValueError("review output changed immutable camera geometry")
+        directory = self.session_directory.expanduser().resolve()
+        directory.mkdir(parents=True, exist_ok=True)
+        for index in range(1, 10000):
+            path = directory / f"stellar_camera_review_bundle_{index:04d}.json"
+            if path.exists():
+                continue
+            with path.open("x", encoding="utf-8") as handle:
+                json.dump(normalized, handle, indent=2, allow_nan=False)
+                handle.write("\n")
+            return path
+        raise FileExistsError("camera-review numbering is exhausted")
+
     def viewer_html(self) -> str:
         with self.lock:
             html = self.html
@@ -343,7 +372,8 @@ def _handler(state: ViewerState) -> type[BaseHTTPRequestHandler]:
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
         def do_POST(self) -> None:  # noqa: N802
-            if self.path not in ("/api/load", "/api/pose", "/api/shutdown"):
+            if self.path not in ("/api/load", "/api/pose", "/api/review-bundle",
+                                 "/api/shutdown"):
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
                 return
             try:
@@ -358,11 +388,15 @@ def _handler(state: ViewerState) -> type[BaseHTTPRequestHandler]:
                         name="arepo-camera-server-shutdown", daemon=True).start()
                     return
                 length = int(self.headers.get("Content-Length", "0"))
-                if length <= 0 or length > 1_000_000:
+                if length <= 0 or length > 10_000_000:
                     raise ValueError("invalid request size")
                 request = json.loads(self.rfile.read(length))
                 if self.path == "/api/pose":
                     path = state.save_pose(request)
+                    self._json(HTTPStatus.CREATED, {"path": str(path)})
+                    return
+                if self.path == "/api/review-bundle":
+                    path = state.save_review_bundle(request)
                     self._json(HTTPStatus.CREATED, {"path": str(path)})
                     return
                 snapshot_value = request.get("snapshot")
@@ -371,14 +405,16 @@ def _handler(state: ViewerState) -> type[BaseHTTPRequestHandler]:
                     if snapshot is None:
                         raise ValueError("select a catalog snapshot before loading")
                     result = state.start_catalog_load(
-                        snapshot, int(request.get("max_points", 400_000)))
+                        snapshot, int(request.get("max_points", 400_000)),
+                        request.get("pose_id"))
                 else:
                     path = Path(str(request["path"]))
                     result = state.start_load(
                         path, snapshot, int(request.get("max_points", 400_000)),
                         request.get("scene_sha256"),
                         Path(str(request["field_sidecar"]))
-                        if request.get("field_sidecar") else None)
+                        if request.get("field_sidecar") else None,
+                        request.get("pose_id"))
                 self._json(HTTPStatus.ACCEPTED, result)
             except (KeyError, TypeError, ValueError, OSError, json.JSONDecodeError) as error:
                 self._json(HTTPStatus.BAD_REQUEST, {"error": str(error)})

@@ -3,7 +3,7 @@
 
 The generated HTML has no runtime dependencies and can be opened directly in a
 browser. It supports orbit, pan, orthographic zoom, physical channel coloring,
-key-pose capture, and playback of an optional v055 camera path.
+immutable camera-alternative review, and playback of an optional v055 path.
 """
 
 from __future__ import annotations
@@ -560,7 +560,11 @@ button:hover { background: #222b33; }
 #colorBar { height: 15px; margin-top: 7px; border: 1px solid #3b4651; background: linear-gradient(90deg,#07101c,#29618c,#b8561f,#ffe09e); }
 .meta { font-size: 11px; line-height: 1.55; color: #8fa0ae; overflow-wrap: anywhere; }
 #snapshot { display: block; width: 100%; min-height: 31px; padding: 7px 9px; border-left: 2px solid #647786; background: #0c1116; color: #edf2f5; font-size: 13px; }
-#status { margin-top: 10px; color: #b7c9d5; }
+	#status { margin-top: 10px; color: #b7c9d5; }
+	#reviewDirty { margin-top: 7px; padding: 6px 8px; border-left: 3px solid #627482; background: #0c1116; }
+	#reviewDirty.unsaved { border-color: #e6a64b; color: #ffd79b; }
+	#reviewDirty.saved { border-color: #5fa77a; color: #bde7ca; }
+	#reviewVerification { margin: 8px 0 0; padding: 8px; border: 1px solid #303a43; background: #0b1015; color: #aebdc7; white-space: pre-wrap; font-size: 10px; line-height: 1.45; }
 #timeline { display: none; }
 .hint { position: fixed; right: 14px; bottom: 46px; padding: 6px 8px; background: rgba(8,11,14,.78); color: #a9b6bf; font-size: 11px; }
 #visibleSnapshot { position: fixed; right: 14px; bottom: 12px; z-index: 4; padding: 7px 10px; border: 1px solid #46535e; border-radius: 4px; background: rgba(8,11,14,.92); color: #e8f1f5; font-size: 12px; font-weight: 650; }
@@ -622,10 +626,19 @@ body.capture-mode #view { left: 0; width: 100vw; height: 100vh; }
   <div id="zoomReadout" class="meta"></div>
   <label for="snapshot">Visible AREPO snapshot index</label><output id="snapshot" aria-label="Visible AREPO snapshot index">unknown</output>
   <div class="meta">This value comes from the cells currently loaded. It cannot be changed by editing camera metadata. A camera pose stores only the view, look-at point, roll, and zoom for this simulation output.</div>
-  <button id="addPose">Save camera pose</button>
-  <div class="row"><button id="copyPose">Copy current pose</button><button id="download">Download camera poses</button></div>
-  <button id="clearPoses">Clear saved camera poses</button>
-  <div id="poseCount" class="meta">0 camera poses</div>
+	  <h2>Reviewed Alternatives</h2>
+	  <div class="row"><button id="previousPose" type="button">Previous pose</button><button id="nextPose" type="button">Next pose</button></div>
+	  <label for="reviewPose">Snapshot / camera alternative</label><select id="reviewPose"><option value="">No pose bundle loaded</option></select>
+	  <div id="poseCount" class="meta">No immutable alternatives loaded</div>
+	  <label for="presetName">Named per-channel style preset</label><input id="presetName" type="text" spellcheck="false" value="copper_blue_high_gamma">
+	  <label for="stylePreset">Saved preset revision</label><select id="stylePreset"><option value="">No preset revisions</option></select>
+	  <button id="copyStyle" type="button">Copy current style as preset revision</button>
+	  <div class="row"><button id="bindStyleSelected" type="button">Apply preset to this pose</button><button id="bindStyleAll" type="button">Apply preset to all poses</button></div>
+	  <button id="savePoseOverride" type="button">Save current style as pose override</button>
+	  <div class="row"><button id="copyPose" type="button">Copy exact camera</button><button id="download" type="button">Download reviewed bundle</button></div>
+	  <button id="saveReviewServer" type="button">Save reviewed bundle no-clobber</button>
+	  <div id="reviewDirty">No reviewed pose is active.</div>
+	  <pre id="reviewVerification">Load a pose bundle to verify camera and display state.</pre>
   <div id="timeline">
     <h2>Spline Playback</h2>
     <input id="pathSlider" type="range" min="0" max="0" value="0" step="1">
@@ -634,12 +647,13 @@ body.capture-mode #view { left: 0; width: 100vw; height: 100vh; }
   </div>
   <div id="status" class="meta"></div>
 </aside>
-<div class="hint">Drag: orbit | Shift/right drag: pan | Wheel: zoom | Double-click: enter feature | K: save pose | Space: play</div>
+<div class="hint">Drag: orbit | Shift/right drag: pan | Wheel: zoom | Double-click: enter feature | K: save style override | Space: play</div>
 <div id="visibleSnapshot">VISIBLE CELLS: AREPO SNAPSHOT UNKNOWN</div>
 <script>
 const DATA = __PAYLOAD__;
-const KEYFRAME_STORAGE='arepo_camera_lab_camera_poses_v002';
-const LEGACY_KEYFRAME_STORAGE='arepo_camera_lab_keyframes_v001';
+	const REVIEW_STORAGE='arepo_camera_lab_review_bundle_v002';
+	const REVIEW_DRAFT_STORAGE='arepo_camera_lab_review_drafts_v001';
+	const REVIEW_PENDING_POSE='arepo_camera_lab_pending_pose_v001';
 const DERIVED_CHANNEL_STORAGE='arepo_camera_lab_derived_channels_v001';
 const SELECTED_CHANNEL_STORAGE='arepo_camera_lab_selected_channel_v001';
 const BASE_CHANNEL_NAMES=Object.keys(DATA.channels);
@@ -735,18 +749,10 @@ function rotate(vector, axis, angle) { const u=V.unit(axis), c=Math.cos(angle),s
 function cleanBasis(forward,up) { forward=V.unit(forward); let right=V.unit(V.cross(forward,up)); up=V.unit(V.cross(right,forward)); return {forward,up,right}; }
 const initial=DATA.initial_camera;
 let camera={target:[...initial.target],scale:initial.scale,...cleanBasis(initial.forward,initial.up)};
-function storedKeyframes(){
-  try {
-    const current=JSON.parse(localStorage.getItem(KEYFRAME_STORAGE)||'null');
-    if(Array.isArray(current))return current;
-    const legacy=JSON.parse(localStorage.getItem(LEGACY_KEYFRAME_STORAGE)||'[]');
-    return Array.isArray(legacy)?legacy:[];
-  } catch(error) { return []; }
-}
-function persistKeyframes(){try{localStorage.setItem(KEYFRAME_STORAGE,JSON.stringify(keyframes));return true;}catch(error){return false;}}
-let keyframes=storedKeyframes(), dragging=false, last=[0,0], panMode=false, playing=null, batchCapture=false;
+	let dragging=false,last=[0,0],panMode=false,playing=null,batchCapture=false;
 function setCamera(entry) { camera.target=[...entry.target]; camera.scale=entry.scale; Object.assign(camera,cleanBasis(entry.forward,entry.up)); }
-function resize(){const ratio=devicePixelRatio||1,w=Math.floor(canvas.clientWidth*ratio),h=Math.floor(canvas.clientHeight*ratio);if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;gl.viewport(0,0,w,h);} }
+let restoredCanvasSize=null;
+function resize(){const ratio=devicePixelRatio||1,w=restoredCanvasSize?.width??Math.floor(canvas.clientWidth*ratio),h=restoredCanvasSize?.height??Math.floor(canvas.clientHeight*ratio);if(canvas.width!==w||canvas.height!==h){canvas.width=w;canvas.height=h;gl.viewport(0,0,w,h);} }
 const paletteIds={copper_blue:0,viridis:1,plasma:2,magma:3,inferno:4,turbo:5,blue_red:6,grayscale:7};
 const paletteGradients={copper_blue:'#07101c,#29618c,#b8561f,#ffe09e',viridis:'#440154,#3b528b,#21918c,#5ec962,#fde725',plasma:'#0d0887,#7e03a8,#cc4778,#f89540,#f0f921',magma:'#000004,#3b0f70,#8c2981,#de4968,#fcfdbf',inferno:'#000004,#420a68,#932667,#dd513a,#fcffa4',turbo:'#30123b,#28bbec,#a4fc3c,#f9a31b,#7a0403',blue_red:'#1f6be0,#d1d9d6,#e04c1a',grayscale:'#000,#fff'};
 const scaleIds={linear:0,log10:1,symlog:2};
@@ -847,7 +853,7 @@ const derivedSaved=document.getElementById('derivedSaved'),derivedName=document.
 const sceneMeta=document.getElementById('sceneMeta'),statusText=document.getElementById('status'),snapshotReadout=document.getElementById('snapshot'),poseCountText=document.getElementById('poseCount'),visibleSnapshot=document.getElementById('visibleSnapshot');
 const resetButton=document.getElementById('reset'),fitButton=document.getElementById('fit'),rollLeftButton=document.getElementById('rollLeft'),rollRightButton=document.getElementById('rollRight');
 const zoomInButton=document.getElementById('zoomIn'),zoomOutButton=document.getElementById('zoomOut'),zoomReadout=document.getElementById('zoomReadout');
-const addPoseButton=document.getElementById('addPose'),copyPoseButton=document.getElementById('copyPose'),downloadButton=document.getElementById('download'),clearPosesButton=document.getElementById('clearPoses');
+const copyPoseButton=document.getElementById('copyPose'),downloadButton=document.getElementById('download'),previousPoseButton=document.getElementById('previousPose'),nextPoseButton=document.getElementById('nextPose'),reviewPose=document.getElementById('reviewPose'),presetName=document.getElementById('presetName'),stylePreset=document.getElementById('stylePreset'),copyStyleButton=document.getElementById('copyStyle'),bindStyleSelectedButton=document.getElementById('bindStyleSelected'),bindStyleAllButton=document.getElementById('bindStyleAll'),savePoseOverrideButton=document.getElementById('savePoseOverride'),saveReviewServerButton=document.getElementById('saveReviewServer'),reviewDirty=document.getElementById('reviewDirty'),reviewVerification=document.getElementById('reviewVerification');
 const timelinePanel=document.getElementById('timeline'),pathSlider=document.getElementById('pathSlider'),pathStatus=document.getElementById('pathStatus'),playButton=document.getElementById('play'),stopButton=document.getElementById('stop');
 let currentChannel=null,derivedDefinitions=readDerivedDefinitions();
 const initialDerivedErrors=materializeDerivedDefinitions();rebuildChannelOptions(localStorage.getItem(SELECTED_CHANNEL_STORAGE)||'rotational_fraction');rebuildDerivedEditor();loadChannel(channel.value);channel.onchange=()=>loadChannel(channel.value);
@@ -865,24 +871,54 @@ for(const [input,output] of [[gamma,gammaValue],[saturation,saturationValue],[br
 document.getElementById('sceneMeta').textContent=`AREPO snapshot index ${DATA.scene.snapshot ?? 'unknown'} | ${DATA.point_count.toLocaleString()} / ${DATA.scene.num_cells.toLocaleString()} cells | radius ${DATA.scene.display_radius_cm.toExponential(3)} cm | scene ${DATA.scene.sha256.slice(0,12)}`;
 snapshotReadout.textContent=DATA.scene.snapshot ?? 'unknown';
 visibleSnapshot.textContent=`VISIBLE CELLS: AREPO SNAPSHOT ${DATA.scene.snapshot ?? 'UNKNOWN'}`;
-canvas.oncontextmenu=e=>e.preventDefault();canvas.onpointerdown=e=>{dragging=true;canvas.classList.add('dragging');last=[e.clientX,e.clientY];panMode=e.shiftKey||e.button===2;canvas.setPointerCapture(e.pointerId);};canvas.onpointerup=e=>{dragging=false;canvas.classList.remove('dragging');canvas.releasePointerCapture(e.pointerId);};canvas.onpointermove=e=>{if(!dragging)return;const dx=e.clientX-last[0],dy=e.clientY-last[1];last=[e.clientX,e.clientY];if(panMode){camera.target=V.add(camera.target,V.add(V.scale(camera.right,-dx*camera.scale*0.0025),V.scale(camera.up,dy*camera.scale*0.0025)));}else{let f=rotate(camera.forward,camera.up,-dx*0.006),r=V.unit(V.cross(f,camera.up));f=rotate(f,r,-dy*0.006);let u=rotate(camera.up,r,-dy*0.006);Object.assign(camera,cleanBasis(f,u));}};
-canvas.onwheel=e=>{e.preventDefault();camera.scale=Math.min(100,Math.max(1e-6,camera.scale*Math.exp(e.deltaY*0.0015)));};
-canvas.ondblclick=e=>{const rect=canvas.getBoundingClientRect(),aspect=canvas.width/canvas.height,x=((e.clientX-rect.left)/rect.width*2-1)*camera.scale*aspect,y=(1-(e.clientY-rect.top)/rect.height*2)*camera.scale;camera.target=V.add(camera.target,V.add(V.scale(camera.right,x),V.scale(camera.up,y)));camera.scale=Math.max(1e-6,camera.scale*0.35);};
+canvas.oncontextmenu=e=>e.preventDefault();canvas.onpointerdown=e=>{dragging=true;canvas.classList.add('dragging');last=[e.clientX,e.clientY];panMode=e.shiftKey||e.button===2;canvas.setPointerCapture(e.pointerId);};canvas.onpointerup=e=>{dragging=false;canvas.classList.remove('dragging');canvas.releasePointerCapture(e.pointerId);};canvas.onpointermove=e=>{if(!dragging)return;const dx=e.clientX-last[0],dy=e.clientY-last[1];last=[e.clientX,e.clientY];if(dx||dy)markCameraModified();if(panMode){camera.target=V.add(camera.target,V.add(V.scale(camera.right,-dx*camera.scale*0.0025),V.scale(camera.up,dy*camera.scale*0.0025)));}else{let f=rotate(camera.forward,camera.up,-dx*0.006),r=V.unit(V.cross(f,camera.up));f=rotate(f,r,-dy*0.006);let u=rotate(camera.up,r,-dy*0.006);Object.assign(camera,cleanBasis(f,u));}};
+canvas.onwheel=e=>{e.preventDefault();markCameraModified();camera.scale=Math.min(100,Math.max(1e-6,camera.scale*Math.exp(e.deltaY*0.0015)));};
+canvas.ondblclick=e=>{markCameraModified();const rect=canvas.getBoundingClientRect(),aspect=canvas.width/canvas.height,x=((e.clientX-rect.left)/rect.width*2-1)*camera.scale*aspect,y=(1-(e.clientY-rect.top)/rect.height*2)*camera.scale;camera.target=V.add(camera.target,V.add(V.scale(camera.right,x),V.scale(camera.up,y)));camera.scale=Math.max(1e-6,camera.scale*0.35);};
 function roll(angle){camera.up=rotate(camera.up,camera.forward,angle);Object.assign(camera,cleanBasis(camera.forward,camera.up));}
-resetButton.onclick=()=>setCamera(initial);fitButton.onclick=()=>{camera.target=[0,0,0];camera.scale=1.05;};rollLeftButton.onclick=()=>roll(-Math.PI/90);rollRightButton.onclick=()=>roll(Math.PI/90);
-zoomInButton.onclick=()=>{camera.scale=Math.max(1e-6,camera.scale*0.5);};zoomOutButton.onclick=()=>{camera.scale=Math.min(100,camera.scale*2);};
+resetButton.onclick=()=>{markCameraModified();setCamera(initial);};fitButton.onclick=()=>{markCameraModified();camera.target=[0,0,0];camera.scale=1.05;};rollLeftButton.onclick=()=>{markCameraModified();roll(-Math.PI/90);};rollRightButton.onclick=()=>{markCameraModified();roll(Math.PI/90);};
+zoomInButton.onclick=()=>{markCameraModified();camera.scale=Math.max(1e-6,camera.scale*0.5);};zoomOutButton.onclick=()=>{markCameraModified();camera.scale=Math.min(100,camera.scale*2);};
 function pose(){if(DATA.scene.snapshot===null||DATA.scene.snapshot===undefined)throw new Error('The loaded scene has no AREPO snapshot index. Reload it with an explicit index before saving a pose.');const radius=DATA.scene.display_radius_cm,center=DATA.scene.center_cm,look=V.add(center,V.scale(camera.target,radius)),half=camera.scale*radius,pos=V.sub(look,V.scale(camera.forward,4*half));return {snapshot:Number(DATA.scene.snapshot),position_cm:pos,look_at_cm:look,view_direction:[...camera.forward],up:[...camera.up],screen_half_extent_cm:half,scene_sha256:DATA.scene.sha256,scene_path:DATA.scene.path};}
-function uniqueSnapshotCount(){return new Set(keyframes.map(entry=>entry.snapshot)).size;}
-function updateCount(){const epochs=uniqueSnapshotCount();poseCountText.textContent=`${keyframes.length} saved camera pose${keyframes.length===1?'':'s'} across ${epochs} AREPO snapshot${epochs===1?'':'s'}`;}
-function poseIdentifier(snapshot){if(globalThis.crypto&&crypto.randomUUID)return `snapshot-${snapshot}-${crypto.randomUUID()}`;return `snapshot-${snapshot}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`;}
-addPoseButton.onclick=async()=>{try{const p=pose();p.pose_id=poseIdentifier(p.snapshot);p.saved_at=new Date().toISOString();keyframes.push(p);const persisted=persistKeyframes();updateCount();const alternatives=keyframes.filter(entry=>entry.snapshot===p.snapshot).length;let serverCopy='';try{const response=await fetch('/api/pose',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(p)}),result=await response.json();if(response.ok)serverCopy=` and ${result.path}`;else throw new Error(result.error||`HTTP ${response.status}`);}catch(error){serverCopy=`; browser copy kept, server copy unavailable (${error.message})`;}statusText.textContent=`Saved no-clobber camera alternative ${alternatives} for visible AREPO snapshot ${p.snapshot}${persisted?' in this browser':' in memory only'}${serverCopy}.`;}catch(error){statusText.textContent=error.message;}};
-copyPoseButton.onclick=async()=>{await navigator.clipboard.writeText(JSON.stringify(pose(),null,2));statusText.textContent='Current pose copied.';};
-downloadButton.onclick=()=>{const latestBySnapshot=new Map();for(const entry of keyframes)latestBySnapshot.set(Number(entry.snapshot),entry);const selected=[...latestBySnapshot.values()].sort((a,b)=>a.snapshot-b.snapshot);const payload={schema:'stellar_camera_keyframes_v001',scene:DATA.scene,keyframes:selected,alternatives:keyframes,selection:'keyframes contains the latest saved pose per AREPO snapshot; alternatives preserves every no-clobber save'};const blob=new Blob([JSON.stringify(payload,null,2)+'\n'],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='stellar_camera_poses.json';a.click();URL.revokeObjectURL(a.href);statusText.textContent=`Downloaded ${selected.length} spline knot${selected.length===1?'':'s'} plus ${keyframes.length} preserved alternative${keyframes.length===1?'':'s'}.`;};
-clearPosesButton.onclick=()=>{if(keyframes.length&&confirm('Clear all saved camera poses from this browser?')){keyframes=[];persistKeyframes();updateCount();statusText.textContent='Saved camera poses cleared.';}};
-updateCount();
+const embeddedReview=DATA.review_workspace?.bundle??null;
+const reviewSidecars=DATA.review_workspace?.field_sidecar_sha256_by_snapshot??{};
+function cloned(value){return JSON.parse(JSON.stringify(value));}
+function storedReview(){try{const value=JSON.parse(localStorage.getItem(REVIEW_STORAGE)||'null');if(value&&embeddedReview&&value.schema==='stellar_camera_review_bundle_v002'&&value.geometry_fingerprint_sha256===embeddedReview.geometry_fingerprint_sha256)return value;}catch(error){}return embeddedReview?cloned(embeddedReview):null;}
+function storedDrafts(){try{const value=JSON.parse(localStorage.getItem(REVIEW_DRAFT_STORAGE)||'{}');return value&&typeof value==='object'?value:{};}catch(error){return {};}}
+let reviewBundle=storedReview(),reviewDrafts=storedDrafts(),activePose=null,styleDirty=false,cameraExact=false,suppressStyleDirty=false;
+const alternatives=reviewBundle?.geometry?.alternatives??[];
+function uniqueId(prefix){if(globalThis.crypto&&crypto.randomUUID)return `${prefix}-${crypto.randomUUID()}`;return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`;}
+function persistReview(){if(!reviewBundle)return false;try{localStorage.setItem(REVIEW_STORAGE,JSON.stringify(reviewBundle));localStorage.setItem(REVIEW_DRAFT_STORAGE,JSON.stringify(reviewDrafts));return true;}catch(error){statusText.textContent=`Browser review storage failed: ${error.message}`;return false;}}
+function visualState(forPose=activePose){if(!forPose)throw new Error('Select an immutable pose first.');resize();return {schema:'stellar_camera_visual_state_v001',channel:channel.value,scale_mode:scaleMode.value,low:rangeState.low,high:rangeState.high,symlog_threshold:rangeState.linthresh,palette:palette.value,inversion:invert.checked,gamma:Number(gamma.value),saturation:Number(saturation.value),brightness:Number(brightness.value),point_size:Number(pointSize.value),opacity:Number(opacity.value),point_budget:Number(DATA.scene.point_budget??DATA.point_count),canvas_size:{width:canvas.width,height:canvas.height},scene_sha256:forPose.scene_sha256,field_sidecar_sha256:reviewSidecars[String(forPose.snapshot)]??null};}
+function syncStyleReadouts(){gammaValue.textContent=Number(gamma.value).toFixed(2);saturationValue.textContent=Number(saturation.value).toFixed(2);brightnessValue.textContent=Number(brightness.value).toFixed(2);updateColorBar();updateChannelMeta();}
+function applyVisualState(state){if(!state)return;suppressStyleDirty=true;try{if(DATA.channels[state.channel]){channel.value=state.channel;loadChannel(state.channel);}scaleMode.value=state.scale_mode;palette.value=state.palette;setNumericValue('low',rangeLow,Number(state.low));setNumericValue('high',rangeHigh,Number(state.high));setNumericValue('linthresh',linthresh,Number(state.symlog_threshold));rangePreset.value='custom';invert.checked=Boolean(state.inversion);gamma.value=String(state.gamma);saturation.value=String(state.saturation);brightness.value=String(state.brightness);pointSize.value=String(state.point_size);opacity.value=String(state.opacity);restoredCanvasSize={width:Number(state.canvas_size.width),height:Number(state.canvas_size.height)};resize();symlogControl.style.display=scaleMode.value==='symlog'?'block':'none';syncStyleReadouts();}finally{suppressStyleDirty=false;}}
+function latestBinding(poseId){if(!reviewBundle)return null;for(let index=reviewBundle.pose_style_bindings.length-1;index>=0;--index){const binding=reviewBundle.pose_style_bindings[index];if(binding.pose_id===poseId)return binding;}return null;}
+function cameraSummary(){if(!activePose)return 'camera: no active pose';return `camera: ${cameraExact?'exact immutable geometry':'interactive camera differs from immutable geometry'}\nposition_cm: ${activePose.position_cm.join(', ')}\nlook_at_cm: ${activePose.look_at_cm.join(', ')}\nview_direction: ${activePose.view_direction.join(', ')}\nup: ${activePose.up.join(', ')}\nscreen_half_extent_cm: ${activePose.screen_half_extent_cm}`;}
+function updateReviewReadout(){if(!activePose){reviewDirty.className='';reviewDirty.textContent='No reviewed pose is active.';reviewVerification.textContent='Load a pose bundle to verify camera and display state.';return;}reviewDirty.className=styleDirty?'unsaved':'saved';reviewDirty.textContent=styleDirty?'UNSAVED STYLE DRAFT retained in this browser':'STYLE BINDING SAVED (camera geometry unchanged)';reviewVerification.textContent=`pose_id: ${activePose.pose_id}\nsnapshot: ${activePose.snapshot}\nscene_sha256: ${activePose.scene_sha256}\n${cameraSummary()}\nchannel: ${channel.value}\nscale/range: ${scaleMode.value} [${rangeState.low}, ${rangeState.high}]\nsymlog_threshold: ${rangeState.linthresh}\npalette/invert: ${palette.value} / ${invert.checked}\ngamma/saturation/brightness: ${gamma.value} / ${saturation.value} / ${brightness.value}\npoint_size/opacity/budget: ${pointSize.value} / ${opacity.value} / ${DATA.scene.point_budget??DATA.point_count}\ncanvas: ${canvas.width}x${canvas.height}`;}
+function markStyleDirty(){if(suppressStyleDirty||!activePose)return;styleDirty=true;reviewDrafts[activePose.pose_id]=visualState(activePose);persistReview();updateReviewReadout();}
+function markCameraModified(){if(!activePose)return;cameraExact=false;updateReviewReadout();}
+function rebuildPoseMenu(){reviewPose.replaceChildren();if(!alternatives.length){reviewPose.appendChild(new Option('No pose bundle loaded',''));reviewPose.disabled=true;previousPoseButton.disabled=true;nextPoseButton.disabled=true;poseCountText.textContent='No immutable alternatives loaded';return;}const grouped=new Map();for(const item of alternatives){const snapshot=Number(item.snapshot);if(!grouped.has(snapshot))grouped.set(snapshot,[]);grouped.get(snapshot).push(item);}for(const [snapshot,poses] of grouped){const group=document.createElement('optgroup');group.label=`AREPO snapshot ${snapshot} (${poses.length} alternative${poses.length===1?'':'s'})`;poses.forEach((item,index)=>group.appendChild(new Option(`alternative ${index+1} | ${item.pose_id}`,item.pose_id)));reviewPose.appendChild(group);}poseCountText.textContent=`${alternatives.length} immutable camera alternatives across ${grouped.size} AREPO snapshots | source ${reviewBundle.source_pose_bundle?.sha256?.slice(0,12)??'embedded'}`;}
+function rebuildPresetMenu(selected){stylePreset.replaceChildren();const presets=reviewBundle?.style_presets??[];if(!presets.length){stylePreset.appendChild(new Option('No preset revisions',''));stylePreset.disabled=true;return;}stylePreset.disabled=false;for(const preset of presets){stylePreset.appendChild(new Option(`${preset.name} | ${preset.channel} | ${preset.preset_id.slice(-8)}`,preset.preset_id));}stylePreset.value=presets.some(row=>row.preset_id===selected)?selected:presets[presets.length-1].preset_id;}
+function selectedPreset(){return reviewBundle?.style_presets.find(row=>row.preset_id===stylePreset.value)??null;}
+function defaultVisualState(){restoredCanvasSize=null;loadChannel('rotational_fraction');scaleMode.value=currentChannel.default_scale;palette.value='copper_blue';setNumericValue('low',rangeLow,currentChannel.default_low);setNumericValue('high',rangeHigh,currentChannel.default_high);setNumericValue('linthresh',linthresh,currentChannel.linthresh);invert.checked=false;gamma.value='1';saturation.value='1';brightness.value='1';pointSize.value='2.2';opacity.value='0.72';syncStyleReadouts();}
+async function activatePoseId(poseId){const target=alternatives.find(row=>row.pose_id===poseId);if(!target)throw new Error(`Unknown pose ID ${poseId}.`);reviewPose.value=poseId;const draft=reviewDrafts[target.pose_id],binding=latestBinding(target.pose_id),restoredStyle=draft??binding?.visual_state??null,desiredBudget=Number(restoredStyle?.point_budget??DATA.scene.point_budget??DATA.point_count),requiresReload=Number(target.snapshot)!==Number(DATA.scene.snapshot)||desiredBudget!==Number(DATA.scene.point_budget??DATA.point_count);if(requiresReload){localStorage.setItem(REVIEW_PENDING_POSE,poseId);statusText.textContent=`Loading verified AREPO snapshot ${target.snapshot} for ${poseId} at point budget ${desiredBudget.toLocaleString()}...`;const response=await fetch('/api/load',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({snapshot:Number(target.snapshot),max_points:desiredBudget,pose_id:poseId})}),result=await response.json();if(!response.ok)throw new Error(result.error||`HTTP ${response.status}`);return;}setPhysicalPose(target);activePose=target;cameraExact=true;localStorage.removeItem(REVIEW_PENDING_POSE);if(draft){applyVisualState(draft);styleDirty=true;}else if(binding){applyVisualState(binding.visual_state);styleDirty=false;}else{suppressStyleDirty=true;try{defaultVisualState();}finally{suppressStyleDirty=false;}styleDirty=false;statusText.textContent='Legacy v001 pose restored exactly. Historical styling was not recorded; explicit camera-lab runtime defaults are shown.';}updateReviewReadout();}
+function savePresetRevision(){if(!reviewBundle||!activePose)throw new Error('Load an immutable pose bundle and select a pose first.');const name=presetName.value.trim();if(!name)throw new Error('Preset name cannot be empty.');const state=visualState(activePose),record={schema:'stellar_camera_style_preset_v001',preset_id:uniqueId('style'),name,channel:state.channel,created_at:new Date().toISOString(),visual_state:state};reviewBundle.style_presets.push(record);persistReview();rebuildPresetMenu(record.preset_id);return record;}
+function addBinding(target,preset,state){const visual=cloned(state);visual.scene_sha256=target.scene_sha256;visual.field_sidecar_sha256=reviewSidecars[String(target.snapshot)]??null;const binding={schema:'stellar_camera_pose_style_binding_v001',binding_id:uniqueId('binding'),pose_id:target.pose_id,preset_id:preset.preset_id,channel:visual.channel,created_at:new Date().toISOString(),visual_state:visual};reviewBundle.pose_style_bindings.push(binding);delete reviewDrafts[target.pose_id];return binding;}
+function bindPreset(targets,useCurrentOverride=false){if(!activePose||targets.some(target=>!target))throw new Error('Select an immutable pose first.');const preset=selectedPreset();if(!preset)throw new Error('Copy the current style as a named preset revision first.');const current=useCurrentOverride?visualState(activePose):preset.visual_state;for(const target of targets)addBinding(target,preset,current);persistReview();styleDirty=Boolean(reviewDrafts[activePose?.pose_id]);updateReviewReadout();return targets.length;}
+function downloadReview(){if(!reviewBundle)throw new Error('No reviewed bundle is loaded.');const blob=new Blob([JSON.stringify(reviewBundle,null,2)+'\n'],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='stellar_camera_review_bundle_v002.json';a.click();URL.revokeObjectURL(a.href);}
+rebuildPoseMenu();rebuildPresetMenu('');
+reviewPose.onchange=()=>activatePoseId(reviewPose.value).catch(error=>statusText.textContent=error.message);
+previousPoseButton.onclick=()=>{if(!activePose&&alternatives.length)return activatePoseId(alternatives[0].pose_id);const index=alternatives.findIndex(row=>row.pose_id===activePose.pose_id);activatePoseId(alternatives[(index-1+alternatives.length)%alternatives.length].pose_id).catch(error=>statusText.textContent=error.message);};
+nextPoseButton.onclick=()=>{if(!activePose&&alternatives.length)return activatePoseId(alternatives[0].pose_id);const index=alternatives.findIndex(row=>row.pose_id===activePose.pose_id);activatePoseId(alternatives[(index+1)%alternatives.length].pose_id).catch(error=>statusText.textContent=error.message);};
+copyStyleButton.onclick=()=>{try{const preset=savePresetRevision();statusText.textContent=`Saved immutable preset revision ${preset.preset_id}; no pose binding changed.`;}catch(error){statusText.textContent=error.message;}};
+bindStyleSelectedButton.onclick=()=>{try{const count=bindPreset([activePose]);statusText.textContent=`Appended ${count} pose-style binding; camera geometry unchanged.`;}catch(error){statusText.textContent=error.message;}};
+bindStyleAllButton.onclick=()=>{try{const count=bindPreset(alternatives);statusText.textContent=`Appended ${count} pose-style bindings from one preset; all immutable camera alternatives retained.`;}catch(error){statusText.textContent=error.message;}};
+savePoseOverrideButton.onclick=()=>{try{const count=bindPreset([activePose],true);statusText.textContent=`Appended ${count} per-pose style override; camera geometry unchanged.`;}catch(error){statusText.textContent=error.message;}};
+copyPoseButton.onclick=async()=>{if(!activePose)throw new Error('No immutable camera alternative is active.');await navigator.clipboard.writeText(JSON.stringify(activePose,null,2));statusText.textContent=`Copied exact immutable camera ${activePose.pose_id}.`;};
+downloadButton.onclick=()=>{try{downloadReview();statusText.textContent=`Downloaded ${alternatives.length} unchanged alternatives, ${reviewBundle.style_presets.length} preset revisions, and ${reviewBundle.pose_style_bindings.length} append-only bindings.`;}catch(error){statusText.textContent=error.message;}};
+saveReviewServerButton.onclick=async()=>{try{if(!reviewBundle)throw new Error('No reviewed bundle is loaded.');const response=await fetch('/api/review-bundle',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(reviewBundle)}),result=await response.json();if(!response.ok)throw new Error(result.error||`HTTP ${response.status}`);statusText.textContent=`Saved reviewed bundle no-clobber at ${result.path}.`;}catch(error){statusText.textContent=error.message;}};
+for(const control of [channel,scaleMode,palette,rangeLow,rangeHigh,linthresh,invert,gamma,saturation,brightness,pointSize,opacity]){control.addEventListener('input',markStyleDirty);control.addEventListener('change',markStyleDirty);}
 timelinePanel.style.display='block';
 if(DATA.camera_path.length){pathSlider.max=DATA.camera_path.length-1;const show=i=>{const entry=DATA.camera_path[i];setCamera(entry);pathStatus.textContent=`camera path row ${entry.snapshot} (${i+1}/${DATA.camera_path.length}); visible cells remain AREPO snapshot ${DATA.scene.snapshot??'unknown'}`;};pathSlider.oninput=()=>show(+pathSlider.value);playButton.onclick=()=>{if(playing)return;playing=setInterval(()=>{let i=(+pathSlider.value+1)%DATA.camera_path.length;pathSlider.value=i;show(i);},50);};stopButton.onclick=()=>{clearInterval(playing);playing=null;};show(0);}else{pathSlider.disabled=true;playButton.disabled=true;stopButton.disabled=true;pathStatus.textContent='No spline is loaded. Save one camera pose at each of at least two different snapshots, compile them, then rebuild this viewer with --camera-path.';}
-document.onkeydown=e=>{if(e.key==='k'||e.key==='K')addPoseButton.click();if(e.code==='Space'){e.preventDefault();if(playing)stopButton.click();else if(DATA.camera_path.length)playButton.click();else statusText.textContent='Space plays a compiled path; this single-scene viewer has none loaded yet.';}if(e.key==='r'||e.key==='R')resetButton.click();};
+document.onkeydown=e=>{if(e.key==='k'||e.key==='K')savePoseOverrideButton.click();if(e.code==='Space'){e.preventDefault();if(playing)stopButton.click();else if(DATA.camera_path.length)playButton.click();else statusText.textContent='Space plays a compiled path; this single-scene viewer has none loaded yet.';}if(e.key==='r'||e.key==='R')resetButton.click();};
 function setPhysicalPose(entry){
   if(Number(entry.snapshot)!==Number(DATA.scene.snapshot))throw new Error(`Pose snapshot ${entry.snapshot} does not match visible snapshot ${DATA.scene.snapshot}.`);
   if(String(entry.scene_sha256)!==String(DATA.scene.sha256))throw new Error('Pose scene SHA-256 does not match the visible scene.');
@@ -892,6 +928,7 @@ function setPhysicalPose(entry){
   if(!Number.isFinite(scale)||scale<=0)throw new Error('Pose screen half extent must be positive and finite.');
   setCamera({target,forward,up,scale});
 }
+if(alternatives.length){const pending=DATA.review_workspace?.requested_pose_id||localStorage.getItem(REVIEW_PENDING_POSE),initialPose=alternatives.some(row=>row.pose_id===pending)?pending:(alternatives.find(row=>Number(row.snapshot)===Number(DATA.scene.snapshot))?.pose_id);if(initialPose)activatePoseId(initialPose).catch(error=>statusText.textContent=error.message);}
 function setCaptureMode(enabled){
   batchCapture=Boolean(enabled);document.body.classList.toggle('capture-mode',batchCapture);
   resize();

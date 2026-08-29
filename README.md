@@ -28,6 +28,8 @@ physical-field sidecar:
 ```bash
 arepo-camera-lab serve \
   --catalog /absolute/path/to/camera_lab_catalog.json \
+  --pose-bundle '/absolute/path/to/stellar_camera_poses.json' \
+  --pose-bundle-sha256 <trusted-pose-bundle-sha256> \
   --snapshot 721 \
   --max-points 400000 \
   --cache-directory ~/.cache/arepo-camera-lab \
@@ -125,6 +127,36 @@ browser and recomputed from the newly loaded arrays whenever the catalog
 snapshot changes. Unknown fields and cyclic formulas are rejected; divide by
 zero and other non-finite results are counted and hidden from the point render.
 
+### Review immutable camera alternatives
+
+`--pose-bundle` accepts the original `stellar_camera_keyframes_v001` format or
+the reviewed `stellar_camera_review_bundle_v002` format. The source geometry is
+immutable: every entry in `alternatives` and every original `pose_id` remains
+present. The grouped selector lists every alternative at every simulation
+snapshot. Choosing a pose at another snapshot invokes the verified catalog
+loader, waits for that exact scene/sidecar pair, then restores its look-at,
+source position provenance, direction, up vector, and screen half extent.
+
+Historical v001 files did not record display styling. The viewer says this
+explicitly and starts from named runtime defaults; it never invents a recovered
+style. To review quickly:
+
+1. restore any exact pose and tune the physical channel, scale/range,
+   copper-blue palette, gamma, saturation, brightness, point size, and opacity;
+2. copy that state to a named, immutable per-channel preset revision;
+3. append bindings for the selected pose or all alternatives;
+4. add a full per-pose override only where a composition needs different
+   styling; and
+5. download the combined v002 bundle or save it no-clobber under
+   `--session-directory`.
+
+The review state records exact low/high values, symmetric-log threshold,
+palette inversion, all display controls, point budget, canvas dimensions, and
+scene/sidecar hashes. An amber status identifies a browser-retained unsaved
+draft. The verification panel reports the active immutable camera and exact
+display values. Applying a preset or override appends a binding and never
+rewrites camera geometry.
+
 ### Batch-capture saved alternatives
 
 Render every no-clobber saved camera alternative through the same WebGL point
@@ -161,7 +193,8 @@ arepo-camera-lab build \
 - Shift-drag or right-drag: pan the look-at point.
 - Wheel or the zoom buttons: change orthographic half extent.
 - Double-click: recenter on a visible feature and move inward by 2.86x.
-- `K`: append a no-clobber camera alternative for the displayed snapshot.
+- `K`: append the current style as a per-pose override when reviewing an
+  imported immutable pose bundle.
 - `Space`: play a compiled camera path when one is embedded.
 - `R`: reset the camera.
 
@@ -229,11 +262,11 @@ the data in `snapshot_0721.hdf5`. A **camera pose** is only the selected look-at
 point, orientation, roll, and orthographic half extent associated with that
 output. These are separate concepts throughout the UI.
 
-The live server keeps every saved alternative in browser local storage and also
-writes a numbered JSON under `--session-directory`. Repeated `K` presses never
-overwrite a pose. Downloaded JSON preserves all alternatives, while its
-`keyframes` list contains the latest pose for each simulation output so the
-spline compiler still receives a single-valued camera function. The point
+The v002 review workflow keeps the imported alternatives immutable and stores
+style drafts in browser local storage. Explicit saves append preset revisions
+and pose-style bindings; the server writes numbered v002 bundles under
+`--session-directory`. The original v001 `keyframes` list remains available to
+the spline compiler, while `alternatives` retains all camera choices. The point
 budget controls cell detail only; it has no effect on the number or smoothness
 of spline knots.
 

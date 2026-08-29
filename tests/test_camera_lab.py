@@ -8,7 +8,7 @@ from unittest import mock
 
 import numpy as np
 
-from arepo_camera_lab import catalog, cleanup, demo, fields, gallery, routes, server, spline, viewer, vtk_backend
+from arepo_camera_lab import catalog, cleanup, demo, fields, gallery, review, routes, server, spline, viewer, vtk_backend
 
 
 class CameraLabTest(unittest.TestCase):
@@ -66,18 +66,22 @@ class CameraLabTest(unittest.TestCase):
             self.assertIn("Cyclic derived-channel dependency", html)
             self.assertIn("non-finite values are hidden", html)
             self.assertIn("abs(a_value) > 3.402823e38", html)
-            self.assertIn("localStorage.setItem(KEYFRAME_STORAGE", html)
+            self.assertIn("arepo_camera_lab_review_bundle_v002", html)
             self.assertIn("scene_sha256:DATA.scene.sha256", html)
             self.assertIn("VISIBLE CELLS: AREPO SNAPSHOT", html)
             self.assertIn('<output id="snapshot" aria-label="Visible AREPO snapshot index">', html)
             self.assertNotIn('id="snapshot" type="text"', html)
             self.assertIn("snapshotReadout.textContent=DATA.scene.snapshot", html)
-            self.assertIn("keyframes.push(p)", html)
+            self.assertIn("Apply preset to all poses", html)
+            self.assertIn("STYLE BINDING SAVED", html)
+            self.assertIn("camera geometry unchanged", html)
             self.assertNotIn("keyframes[old]=p", html)
             self.assertIn("visible cells remain AREPO snapshot", html)
-            self.assertIn("/api/pose", html)
+            self.assertIn("/api/review-bundle", html)
             self.assertIn("AREPO_CAMERA_LAB_CAPTURE", html)
             self.assertIn("setPhysicalPose", html)
+            self.assertIn("stellar_camera_review_bundle_v002", html)
+            self.assertIn("/api/review-bundle", html)
             self.assertIn("preserveDrawingBuffer: true", html)
             self.assertEqual(status["scene_sha256"], digest)
             state.session_directory = Path(temporary) / "server-poses"
@@ -94,6 +98,74 @@ class CameraLabTest(unittest.TestCase):
             self.assertTrue(saved_pose.is_file())
             with self.assertRaises(ValueError):
                 state.load(scene, 721, 3000, "not-a-digest")
+
+    def test_review_bundle_preserves_all_alternatives_and_style_contract(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "poses.json"
+            alternatives = []
+            for snapshot in (31, 721):
+                for alternative in range(2):
+                    alternatives.append({
+                        "snapshot": snapshot,
+                        "position_cm": [0.0, 0.0, float(-2 - alternative)],
+                        "look_at_cm": [0.0, 0.0, 0.0],
+                        "view_direction": [0.0, 0.0, 1.0],
+                        "up": [0.0, 1.0, 0.0],
+                        "screen_half_extent_cm": 1.0 + alternative,
+                        "scene_sha256": ("a" if snapshot == 31 else "b") * 64,
+                        "pose_id": f"pose-{snapshot}-{alternative}",
+                    })
+            path.write_text(json.dumps({
+                "schema": review.LEGACY_POSE_SCHEMA,
+                "keyframes": [alternatives[1], alternatives[3]],
+                "alternatives": alternatives,
+            }), encoding="utf-8")
+            digest = review.sha256(path)
+            loaded = review.load_bundle(path, digest)
+            self.assertEqual(loaded["schema"], review.REVIEW_BUNDLE_SCHEMA)
+            self.assertEqual(len(loaded["geometry"]["alternatives"]), 4)
+            self.assertFalse(
+                loaded["legacy_style_defaults"]["historical_style_available"])
+            self.assertEqual(loaded["style_presets"], [])
+            before = review.geometry_fingerprint(loaded)
+            style = {
+                "schema": review.STYLE_SCHEMA,
+                "channel": "rotational_fraction", "scale_mode": "linear",
+                "low": 0.0, "high": 1.0, "symlog_threshold": 0.1,
+                "palette": "copper_blue", "inversion": False,
+                "gamma": 2.0, "saturation": 1.2, "brightness": 2.0,
+                "point_size": 2.2, "opacity": 0.72,
+                "point_budget": 400000,
+                "canvas_size": {"width": 1920, "height": 1080},
+                "scene_sha256": "a" * 64,
+                "field_sidecar_sha256": "c" * 64,
+            }
+            loaded["style_presets"].append({
+                "schema": review.PRESET_SCHEMA, "preset_id": "preset-1",
+                "name": "high_gamma", "channel": "rotational_fraction",
+                "created_at": "2026-01-01T00:00:00Z", "visual_state": style,
+            })
+            loaded["pose_style_bindings"].append({
+                "schema": review.BINDING_SCHEMA, "binding_id": "binding-1",
+                "pose_id": "pose-31-0", "preset_id": "preset-1",
+                "channel": "rotational_fraction",
+                "created_at": "2026-01-01T00:00:01Z", "visual_state": style,
+            })
+            normalized = review.normalize_bundle(loaded)
+            self.assertEqual(review.geometry_fingerprint(normalized), before)
+            self.assertEqual(len(normalized["pose_style_bindings"]), 1)
+            state = server.ViewerState(review_bundle=normalized)
+            state.session_directory = root / "review-output"
+            first = state.save_review_bundle(normalized)
+            second = state.save_review_bundle(normalized)
+            self.assertNotEqual(first, second)
+            mutated = json.loads(json.dumps(normalized))
+            mutated["geometry"]["alternatives"][0]["screen_half_extent_cm"] = 9.0
+            with self.assertRaisesRegex(ValueError, "immutable camera geometry"):
+                state.save_review_bundle(mutated)
+            with self.assertRaises(ValueError):
+                review.load_bundle(path, "0" * 64)
 
     def test_demo_scene_is_valid(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
