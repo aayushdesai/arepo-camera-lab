@@ -25,15 +25,22 @@ def source_filename(source: str) -> str:
     return name
 
 
+def verified_cache_path(source: str, expected_sha256: str,
+                        directory: Path) -> Path:
+    expected = validate_sha256(expected_sha256)
+    directory = directory.expanduser().resolve()
+    source_path = Path(source_filename(source))
+    return directory / f"{source_path.stem}_{expected[:16]}{source_path.suffix}"
+
+
 def acquire_verified_file(source: str, expected_sha256: str,
                           directory: Path) -> tuple[Path, str]:
     """Rsync one exact file into a content-addressed cache and verify it."""
     expected = validate_sha256(expected_sha256)
     directory = directory.expanduser().resolve()
     directory.mkdir(parents=True, exist_ok=True)
-    source_name = source_filename(source)
-    source_path = Path(source_name)
-    cached = directory / f"{source_path.stem}_{expected[:16]}{source_path.suffix}"
+    cached = verified_cache_path(source, expected, directory)
+    source_path = Path(source_filename(source))
     if cached.is_file():
         actual = viewer.sha256(cached)
         if actual != expected:
@@ -60,4 +67,3 @@ def acquire_verified_file(source: str, expected_sha256: str,
     os.replace(partial, cached)
     print(f"[rsync] Verified cache ready: {cached}", flush=True)
     return cached, expected
-

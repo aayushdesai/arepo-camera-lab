@@ -11,8 +11,9 @@ import shlex
 import subprocess
 from typing import Any
 
+from . import catalog as scene_catalog
 from . import viewer
-from .transfer import validate_sha256
+from .transfer import validate_sha256, verified_cache_path
 
 
 CLEANUP_SCHEMA = "arepo_camera_lab_cleanup_receipt_v001"
@@ -137,18 +138,61 @@ def archive_and_cleanup(outputs_directory: Path, destination: str,
     return receipt
 
 
+def catalog_cached_inputs(catalog_path: Path,
+                          cache_directory: Path) -> list[CachedInput]:
+    catalog = scene_catalog.load_catalog(catalog_path)
+    cache_directory = cache_directory.expanduser().resolve()
+    inputs: list[CachedInput] = []
+    for snapshot in sorted(catalog.frames):
+        frame = catalog.frames[snapshot]
+        scene = verified_cache_path(
+            frame.scene_source, frame.scene_sha256,
+            cache_directory / "scenes")
+        fields = verified_cache_path(
+            frame.field_sidecar_source, frame.field_sidecar_sha256,
+            cache_directory / "fields")
+        if scene.is_file():
+            inputs.append(CachedInput(
+                scene, frame.scene_source, frame.scene_sha256))
+        if fields.is_file():
+            inputs.append(CachedInput(
+                fields, frame.field_sidecar_source,
+                frame.field_sidecar_sha256))
+    return inputs
+
+
 def add_arguments(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--outputs-directory", type=Path, required=True)
     parser.add_argument("--sync-back-destination", required=True)
-    parser.add_argument("--cached-scene", type=Path, required=True)
-    parser.add_argument("--remote-scene-source", required=True)
-    parser.add_argument("--scene-sha256", required=True)
+    parser.add_argument("--catalog", type=Path,
+                        help="Clean every verified catalog cache currently present")
+    parser.add_argument("--cache-directory", type=Path,
+                        default=Path.home() / ".cache/arepo-camera-lab")
+    parser.add_argument("--cached-scene", type=Path)
+    parser.add_argument("--remote-scene-source")
+    parser.add_argument("--scene-sha256")
     parser.add_argument("--cached-field-sidecar", type=Path)
     parser.add_argument("--remote-field-sidecar-source")
     parser.add_argument("--field-sidecar-sha256")
 
 
 def run(args: argparse.Namespace) -> int:
+    if args.catalog is not None:
+        if any(value is not None for value in (
+                args.cached_scene, args.remote_scene_source, args.scene_sha256,
+                args.cached_field_sidecar,
+                args.remote_field_sidecar_source,
+                args.field_sidecar_sha256)):
+            raise ValueError(
+                "--catalog cannot be combined with individual cached inputs")
+        inputs = catalog_cached_inputs(args.catalog, args.cache_directory)
+        archive_and_cleanup(
+            args.outputs_directory, args.sync_back_destination, inputs)
+        return 0
+    if not all(value is not None for value in (
+            args.cached_scene, args.remote_scene_source, args.scene_sha256)):
+        raise ValueError(
+            "cleanup requires --catalog or the complete cached-scene triple")
     inputs = [CachedInput(
         args.cached_scene, args.remote_scene_source, args.scene_sha256)]
     field_values = (

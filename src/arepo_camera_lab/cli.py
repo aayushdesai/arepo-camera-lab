@@ -8,19 +8,21 @@ import sys
 import webbrowser
 
 from . import catalog as scene_catalog
-from . import cleanup, demo, fields, gallery, render_intent, review, routes, server, spline, viewer, vtk_backend
+from . import cleanup, demo, fields, gallery, movie, render_intent, review, routes, server, spline, viewer, vtk_backend
 
 
 def _serve(args: argparse.Namespace) -> int:
     state = server.ViewerState()
     state.session_directory = args.session_directory.expanduser().resolve()
     state.cleanup_configured = bool(args.cleanup_on_close)
+    state.cleanup_destination = args.sync_back_destination
     if args.cleanup_on_close and (
             args.catalog is None or args.sync_back_destination is None):
         raise ValueError(
             "serve --cleanup-on-close requires --catalog and a unique "
             "--sync-back-destination")
     if args.catalog is not None:
+        state.catalog_path = args.catalog.expanduser().resolve()
         state.catalog = scene_catalog.load_catalog(args.catalog)
         state.cache_directory = args.cache_directory.expanduser().resolve()
         if args.pose_bundle is not None:
@@ -50,7 +52,7 @@ def _serve(args: argparse.Namespace) -> int:
     if not args.no_browser:
         webbrowser.open(f"http://127.0.0.1:{args.port}")
     server.run_server(state, args.port)
-    if args.cleanup_on_close:
+    if args.cleanup_on_close and state.cleanup_receipt is None:
         cleanup.archive_and_cleanup(
             state.session_directory, args.sync_back_destination,
             list(state.cached_inputs.values()))
@@ -177,6 +179,12 @@ def parser() -> argparse.ArgumentParser:
         help="Render every saved camera alternative across all physical channels")
     gallery.add_arguments(gallery_parser)
     gallery_parser.set_defaults(function=gallery.run)
+
+    movie_parser = commands.add_parser(
+        "capture-spline-movie",
+        help="Render a reviewed WebGL point-cloud preview along a v055 spline")
+    movie.add_arguments(movie_parser)
+    movie_parser.set_defaults(function=movie.run)
 
     intent_parser = commands.add_parser(
         "compile-render-intent",

@@ -364,6 +364,38 @@ boundary between the two systems.
 python -m unittest discover -s tests -v
 ```
 
+### Reviewed point-cloud spline preview
+
+Render a bounded local movie that follows every `N`th row of an accepted v055
+camera spline. Camera motion is continuous; the visible simulation state is the
+latest verified catalog snapshot at or before that camera row, so sparse epochs
+are never presented as a continuously exported simulation. Display values are
+smoothly interpolated between the reviewed route poses.
+
+```bash
+conda run --no-capture-output -n arepo-camera-lab arepo-camera-lab \
+  capture-spline-movie \
+  --camera-path /absolute/path/to/camera_path_v055.tsv \
+  --route /absolute/path/to/route.json \
+  --reviewed-bundle /absolute/path/to/stellar_camera_review_bundle_v002.json \
+  --reviewed-bundle-sha256 EXPECTED_SHA256 \
+  --catalog /absolute/path/to/verified_catalog.json \
+  --output-directory /absolute/new/output/directory \
+  --frame-step 5 --max-points 500000 --width 1280 --height 720 \
+  --cleanup-cache-after
+```
+
+The product includes the MP4, every source PNG, a camera/visible-snapshot
+timeline, browser capture records, and a checksum manifest. The cleanup flag
+removes only verified content-addressed scene/field cache files after the movie
+and `ffprobe` checks pass.
+
+On an eta compute node where the catalog's NFS sources are already mounted, use
+`--direct-catalog-inputs` instead of transferring a local cache. The command
+verifies the catalog SHA-256 values in place. Do not combine it with
+`--cleanup-cache-after`; the direct NFS source products are immutable inputs and
+must never be deleted.
+
 The project uses no-clobber output behavior for generated scenes, HTML files,
 camera paths, and diagnostics.
 
@@ -386,6 +418,22 @@ arepo-camera-lab cleanup \
   --remote-field-sidecar-source user@login:/cluster/fields/snapshot_0721.fields.npz \
   --field-sidecar-sha256 <sidecar-sha256>
 ```
+
+For a multi-snapshot server, clean every verified cache currently present from
+one catalog instead of listing files individually:
+
+```bash
+arepo-camera-lab cleanup \
+  --outputs-directory ~/camera-lab-poses \
+  --sync-back-destination user@login:/cluster/camera-lab-sessions/session-002 \
+  --catalog /absolute/path/verified_catalog.json \
+  --cache-directory ~/.cache/arepo-camera-lab
+```
+
+The server's **Archive & close** action now keeps the server alive while the
+cluster-source hashes and rsync result are verified. A failed archive is shown
+in the browser and leaves both server and cache available for retry. The server
+stops only after the archive receipt is complete.
 
 The native VTK command can perform the same operation when its window closes by
 adding `--cleanup-on-close --sync-back-destination user@login:/unique/path` and

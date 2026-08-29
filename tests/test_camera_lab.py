@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import tempfile
@@ -8,7 +9,7 @@ from unittest import mock
 
 import numpy as np
 
-from arepo_camera_lab import catalog, cleanup, demo, fields, gallery, render_intent, review, routes, server, spline, viewer, vtk_backend
+from arepo_camera_lab import catalog, cleanup, demo, fields, gallery, movie, render_intent, review, routes, server, spline, transfer, viewer, vtk_backend
 
 
 class CameraLabTest(unittest.TestCase):
@@ -402,6 +403,66 @@ class CameraLabTest(unittest.TestCase):
             max(row["orientation_deg_per_frame"] for row in diagnostics),
             1.5)
 
+    def test_spline_movie_frame_and_reviewed_style_plan(self) -> None:
+        rows = [
+            {"snapshot": value, "position_cm": [0.0, 0.0, -4.0],
+             "look_at_cm": [0.0, 0.0, 0.0],
+             "view_direction": [0.0, 0.0, 1.0], "up": [0.0, 1.0, 0.0],
+             "screen_half_extent_cm": 1.0, "time_seconds": float(value)}
+            for value in range(31, 42)
+        ]
+        sampled = movie.sample_path(rows, 4)
+        self.assertEqual([row["snapshot"] for row in sampled], [31, 35, 39, 41])
+        self.assertEqual(movie.visible_snapshot(720, [31, 421, 721]), 421)
+        keyframes = [
+            {"snapshot": 31, "pose_id": "left"},
+            {"snapshot": 41, "pose_id": "right"},
+        ]
+        base = {
+            "channel": "rotational_fraction", "scale_mode": "linear",
+            "low": 0.0, "high": 1.0, "symlog_threshold": 0.1,
+            "palette": "copper_blue", "inversion": False,
+            "gamma": 2.0, "saturation": 0.8, "brightness": 1.0,
+            "point_size": 2.0, "opacity": 1.0,
+        }
+        bindings = {
+            "left": dict(base),
+            "right": dict(base, gamma=4.0, brightness=2.0),
+        }
+        style = movie.interpolate_reviewed_style(
+            36, keyframes, bindings, max_points=500_000)
+        self.assertEqual(style["gamma"], 3.0)
+        self.assertEqual(style["brightness"], 1.5)
+        self.assertEqual(style["point_budget"], 500_000)
+        plan = movie.build_frame_plan(
+            sampled, [31, 41], keyframes, bindings, 500_000)
+        self.assertEqual(
+            [row["visible_snapshot"] for row in plan], [31, 31, 31, 41])
+        self.assertEqual(plan[0]["pose"]["pose_id"], "spline-0031")
+
+    def test_spline_movie_direct_catalog_inputs(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            scene = root / "scene.bin"
+            sidecar = root / "fields.npz"
+            scene.write_bytes(b"scene")
+            sidecar.write_bytes(b"fields")
+            path = root / "catalog.json"
+            path.write_text(json.dumps({
+                "schema": catalog.CATALOG_SCHEMA,
+                "required_auxiliary_fields": ["magnetic_field_gauss"],
+                "frames": [{
+                    "snapshot": 721, "label": "disk",
+                    "scene_source": f"user@host:{scene}",
+                    "scene_sha256": viewer.sha256(scene),
+                    "field_sidecar_source": f"user@host:{sidecar}",
+                    "field_sidecar_sha256": viewer.sha256(sidecar),
+                }],
+            }), encoding="utf-8")
+            loaded = catalog.load_catalog(path)
+            resolved = movie.direct_catalog_inputs(loaded, {721})
+            self.assertEqual(resolved[721], (scene.resolve(), sidecar.resolve()))
+
     def test_native_vtk_data_and_pose_contract(self) -> None:
         from types import SimpleNamespace
         with tempfile.TemporaryDirectory() as temporary:
@@ -513,6 +574,100 @@ class CameraLabTest(unittest.TestCase):
                         [cleanup.CachedInput(
                             failed, "user@host:/cluster/failed.bin", failed_digest)])
             self.assertTrue(failed.exists())
+
+    def test_catalog_cleanup_discovers_every_present_verified_cache(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            cache = root / "cache"
+            catalog_path = root / "catalog.json"
+            digest_a = "a" * 64
+            digest_b = "b" * 64
+            catalog_path.write_text(json.dumps({
+                "schema": catalog.CATALOG_SCHEMA,
+                "required_auxiliary_fields": ["magnetic_field_gauss"],
+                "frames": [{
+                    "snapshot": 721, "label": "disk",
+                    "scene_source": "user@host:/data/scene_v052.bin",
+                    "scene_sha256": digest_a,
+                    "field_sidecar_source": "user@host:/data/snapshot.fields.npz",
+                    "field_sidecar_sha256": digest_b,
+                }],
+            }), encoding="utf-8")
+            scene = cache / "scenes" / f"scene_v052_{digest_a[:16]}.bin"
+            fields_path = cache / "fields" / f"snapshot.fields_{digest_b[:16]}.npz"
+            scene.parent.mkdir(parents=True)
+            fields_path.parent.mkdir(parents=True)
+            scene.write_bytes(b"scene")
+            fields_path.write_bytes(b"fields")
+            found = cleanup.catalog_cached_inputs(catalog_path, cache)
+            self.assertEqual(
+                [item.local_path for item in found],
+                [scene.resolve(), fields_path.resolve()])
+
+    def test_verified_transfer_cache_miss_uses_source_filename(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            content = b"verified remote file"
+            digest = hashlib.sha256(content).hexdigest()
+
+            def fake_rsync(command, check=False):
+                self.assertEqual(command[-2], "user@host:/data/scene_v052.bin")
+                Path(command[-1]).write_bytes(content)
+                return mock.Mock(returncode=0)
+
+            with mock.patch.object(transfer.subprocess, "run", side_effect=fake_rsync):
+                cached, actual = transfer.acquire_verified_file(
+                    "user@host:/data/scene_v052.bin", digest, root)
+            self.assertEqual(actual, digest)
+            self.assertEqual(cached.name, f"scene_v052_{digest[:16]}.bin")
+            self.assertEqual(cached.read_bytes(), content)
+
+    def test_server_cleanup_reports_failure_and_shuts_down_only_after_success(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            state = server.ViewerState(
+                cleanup_configured=True,
+                cleanup_destination="user@host:/cluster/session/unique",
+                session_directory=root / "outputs")
+            http_server = mock.Mock()
+            receipt = root / "outputs" / "cleanup_receipt.json"
+            with mock.patch.object(
+                    cleanup, "archive_and_cleanup", return_value=receipt):
+                started = state.start_cleanup(http_server)
+                state.cleanup_worker.join(timeout=5.0)
+            self.assertEqual(started["status"], "archive_started")
+            self.assertEqual(state.cleanup_receipt, receipt)
+            http_server.shutdown.assert_called_once_with()
+
+            catalog_state = server.ViewerState(
+                cleanup_configured=True,
+                cleanup_destination="user@host:/cluster/session/catalog",
+                catalog_path=root / "catalog.json",
+                cache_directory=root / "cache",
+                session_directory=root / "catalog-output")
+            catalog_server = mock.Mock()
+            with mock.patch.object(
+                    cleanup, "catalog_cached_inputs", return_value=[]) as discover, \
+                    mock.patch.object(
+                        cleanup, "archive_and_cleanup", return_value=receipt):
+                catalog_state.start_cleanup(catalog_server)
+                catalog_state.cleanup_worker.join(timeout=5.0)
+            discover.assert_called_once_with(
+                catalog_state.catalog_path, catalog_state.cache_directory)
+            catalog_server.shutdown.assert_called_once_with()
+
+            failed = server.ViewerState(
+                cleanup_configured=True,
+                cleanup_destination="user@host:/cluster/session/other",
+                session_directory=root / "failed")
+            failed_server = mock.Mock()
+            with mock.patch.object(
+                    cleanup, "archive_and_cleanup",
+                    side_effect=OSError("rsync failed")):
+                failed.start_cleanup(failed_server)
+                failed.cleanup_worker.join(timeout=5.0)
+            failed_server.shutdown.assert_not_called()
+            self.assertEqual(failed.status()["cleanup_error"], "rsync failed")
 
     def test_webgl_float32_encoding_bounds_extreme_derived_values(self) -> None:
         encoded = viewer._encode_float32(np.asarray([1.0, 1.0e400, -1.0e400]))

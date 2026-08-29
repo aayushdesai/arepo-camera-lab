@@ -11,6 +11,7 @@ from pathlib import Path
 import threading
 from typing import Any
 
+from . import cleanup as session_cleanup
 from . import review, viewer
 from .catalog import SceneCatalog
 from .cleanup import CachedInput
@@ -63,11 +64,11 @@ function remember(data){try{sessionStorage.setItem(LAST_STATUS,JSON.stringify(da
 function lastStatus(){try{return JSON.parse(sessionStorage.getItem(LAST_STATUS)||'null');}catch(error){return null;}}
 function showVisible(data){const index=data.snapshot??'UNKNOWN';visibleData.textContent=`VISIBLE DATA: AREPO SNAPSHOT ${index} | ${Number(data.point_count).toLocaleString()} CELLS`;visibleData.classList.remove('offline');}
 async function loadCatalog(){try{const response=await fetch('/api/catalog',{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);const data=await response.json();snapshot.replaceChildren();for(const entry of data.frames){const option=document.createElement('option');option.value=entry.snapshot;option.textContent=`${entry.snapshot} | ${entry.label}`;option.dataset.scene=entry.scene_source;option.dataset.fields=entry.field_sidecar_source;snapshot.appendChild(option);}snapshot.disabled=data.frames.length===0;load.disabled=data.frames.length===0;if(data.frames.length===0)status.textContent='No verified snapshot catalog is configured.';}catch(error){snapshot.disabled=true;load.disabled=true;}}
-async function refresh(){try{const response=await fetch('/api/status',{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);const data=await response.json();load.disabled=Boolean(data.loading)||snapshot.options.length===0;snapshot.disabled=Boolean(data.loading)||snapshot.options.length===0;archive.disabled=!data.cleanup_configured||Boolean(data.loading);progress.value=data.progress??0;if(data.loading){if(data.requested_snapshot!=null)snapshot.value=String(data.requested_snapshot);status.textContent=`${data.message} (${Math.round((data.progress??0)*100)}%) | visible snapshot remains ${data.snapshot??'none'}`;return;}if(data.error){snapshot.disabled=snapshot.options.length===0;status.textContent='Load failed: '+data.error;return;}if(data.loaded){const revisionChanged=data.revision!==displayedRevision;scene.value=data.scene_path;fields.value=data.field_sidecar_path??'';if(revisionChanged||!selectionDirty)snapshot.value=String(data.snapshot??'');if(revisionChanged||!pointsDirty)points.value=data.requested_points===0?0:data.requested_points;status.textContent=`Ready: ${data.point_count.toLocaleString()} of ${data.num_cells.toLocaleString()} cells from AREPO snapshot ${data.snapshot??'unknown'} | ${data.scene_path}`;progress.value=1;showVisible(data);remember(data);if(revisionChanged){displayedRevision=data.revision;selectionDirty=false;pointsDirty=false;frame.src='/viewer?revision='+data.revision;}}}catch(error){const previous=lastStatus();if(previous&&previous.loaded){scene.value=previous.scene_path??'';fields.value=previous.field_sidecar_path??'';}load.disabled=true;snapshot.disabled=true;archive.disabled=true;visibleData.classList.add('offline');visibleData.textContent=previous&&previous.loaded?`SERVER OFFLINE | LAST VISIBLE SNAPSHOT ${previous.snapshot??'UNKNOWN'}`:'LOCAL SERVER OFFLINE | VISIBLE DATA UNKNOWN';status.textContent=`Local camera-lab server unavailable. This control page must be opened from http://127.0.0.1, not as a file. Start 'arepo-camera-lab serve ...', open the printed URL, and refresh. (${error.message})`;}}
+async function refresh(){try{const response=await fetch('/api/status',{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);const data=await response.json();load.disabled=Boolean(data.loading)||Boolean(data.cleanup_running)||snapshot.options.length===0;snapshot.disabled=Boolean(data.loading)||Boolean(data.cleanup_running)||snapshot.options.length===0;archive.disabled=!data.cleanup_configured||Boolean(data.loading)||Boolean(data.cleanup_running);progress.value=data.progress??0;if(data.cleanup_running){status.textContent=data.message||'Verifying and archiving the camera-lab session...';return;}if(data.cleanup_error){status.textContent='Archive failed; local data retained: '+data.cleanup_error;return;}if(data.loading){if(data.requested_snapshot!=null)snapshot.value=String(data.requested_snapshot);status.textContent=`${data.message} (${Math.round((data.progress??0)*100)}%) | visible snapshot remains ${data.snapshot??'none'}`;return;}if(data.error){snapshot.disabled=snapshot.options.length===0;status.textContent='Load failed: '+data.error;return;}if(data.loaded){const revisionChanged=data.revision!==displayedRevision;scene.value=data.scene_path;fields.value=data.field_sidecar_path??'';if(revisionChanged||!selectionDirty)snapshot.value=String(data.snapshot??'');if(revisionChanged||!pointsDirty)points.value=data.requested_points===0?0:data.requested_points;status.textContent=`Ready: ${data.point_count.toLocaleString()} of ${data.num_cells.toLocaleString()} cells from AREPO snapshot ${data.snapshot??'unknown'} | ${data.scene_path}`;progress.value=1;showVisible(data);remember(data);if(revisionChanged){displayedRevision=data.revision;selectionDirty=false;pointsDirty=false;frame.src='/viewer?revision='+data.revision;}}}catch(error){const previous=lastStatus();if(previous&&previous.loaded){scene.value=previous.scene_path??'';fields.value=previous.field_sidecar_path??'';}load.disabled=true;snapshot.disabled=true;archive.disabled=true;visibleData.classList.add('offline');visibleData.textContent=previous&&previous.loaded?`SERVER OFFLINE | LAST VISIBLE SNAPSHOT ${previous.snapshot??'UNKNOWN'}`:'LOCAL SERVER OFFLINE | VISIBLE DATA UNKNOWN';status.textContent=`Local camera-lab server unavailable. This control page must be opened from http://127.0.0.1, not as a file. Start 'arepo-camera-lab serve ...', open the printed URL, and refresh. (${error.message})`;}}
 snapshot.onchange=()=>{selectionDirty=true;status.textContent=`Selected AREPO snapshot ${snapshot.value}; press Load selected.`;};
 points.oninput=()=>{pointsDirty=true;};
 load.onclick=async()=>{if(snapshot.value==='')return;const requestedSnapshot=snapshot.value;load.disabled=true;snapshot.disabled=true;selectionDirty=true;pointsDirty=true;status.textContent=`Queueing verified AREPO snapshot ${requestedSnapshot}...`;progress.value=0;try{const response=await fetch('/api/load',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({snapshot:+requestedSnapshot,max_points:+points.value})}),data=await response.json();if(!response.ok)throw new Error(data.error||'load failed');}catch(error){status.textContent='Load failed: '+error.message;load.disabled=false;snapshot.disabled=false;selectionDirty=true;}};
-archive.onclick=async()=>{archive.disabled=true;load.disabled=true;status.textContent='Stopping the server; verified rsync archive and cache cleanup continue in the terminal...';try{const response=await fetch('/api/shutdown',{method:'POST'});if(!response.ok)throw new Error(`HTTP ${response.status}`);}catch(error){status.textContent=`Could not start archive: ${error.message}`;archive.disabled=false;}};
+archive.onclick=async()=>{archive.disabled=true;load.disabled=true;status.textContent='Verifying cluster sources and archiving session outputs...';try{const response=await fetch('/api/shutdown',{method:'POST'}),data=await response.json();if(!response.ok)throw new Error(data.error||`HTTP ${response.status}`);}catch(error){status.textContent=`Could not start archive: ${error.message}`;archive.disabled=false;}};
 loadCatalog().then(refresh);setInterval(refresh,400);
 </script>
 </body>
@@ -86,12 +87,16 @@ class ViewerState:
         "message": "Waiting for a scene", "error": None, "revision": 0})
     worker: threading.Thread | None = None
     catalog: SceneCatalog | None = None
+    catalog_path: Path | None = None
     cache_directory: Path = field(
         default_factory=lambda: Path.home() / ".cache/arepo-camera-lab")
     session_directory: Path = field(
         default_factory=lambda: Path.home() / ".local/share/arepo-camera-lab/session")
     cached_inputs: dict[Path, CachedInput] = field(default_factory=dict)
     cleanup_configured: bool = False
+    cleanup_destination: str | None = None
+    cleanup_worker: threading.Thread | None = None
+    cleanup_receipt: Path | None = None
     review_bundle: dict[str, Any] | None = None
     requested_pose_id: str | None = None
 
@@ -258,6 +263,10 @@ class ViewerState:
         with self.lock:
             result = dict(self.progress)
             result["cleanup_configured"] = self.cleanup_configured
+            result["cleanup_running"] = bool(
+                self.cleanup_worker is not None and self.cleanup_worker.is_alive())
+            result["cleanup_receipt"] = str(self.cleanup_receipt) \
+                if self.cleanup_receipt is not None else None
             result["session_directory"] = str(self.session_directory)
             if self.payload is not None:
                 scene = self.payload["scene"]
@@ -271,6 +280,51 @@ class ViewerState:
                         if self.field_sidecar_path is not None else None,
                 })
             return result
+
+    def start_cleanup(self, http_server: Any) -> dict[str, Any]:
+        if not self.cleanup_configured or self.cleanup_destination is None:
+            raise ValueError(
+                "restart the server with --cleanup-on-close and a unique "
+                "--sync-back-destination")
+        with self.lock:
+            if self.progress.get("loading"):
+                raise ValueError("wait for the current scene load before archiving")
+            if self.cleanup_worker is not None and self.cleanup_worker.is_alive():
+                raise ValueError("archive and cleanup is already running")
+            self.progress.update({
+                "cleanup_running": True, "cleanup_error": None,
+                "message": "Verifying and archiving the camera-lab session",
+            })
+            cached_inputs = (session_cleanup.catalog_cached_inputs(
+                self.catalog_path, self.cache_directory)
+                if self.catalog_path is not None else
+                list(self.cached_inputs.values()))
+
+        def work() -> None:
+            try:
+                receipt = session_cleanup.archive_and_cleanup(
+                    self.session_directory, self.cleanup_destination,
+                    cached_inputs)
+            except Exception as error:
+                with self.lock:
+                    self.progress.update({
+                        "cleanup_running": False,
+                        "cleanup_error": str(error),
+                        "message": "Archive failed; server and local cache remain available",
+                    })
+                return
+            with self.lock:
+                self.cleanup_receipt = receipt
+                self.progress.update({
+                    "cleanup_running": False, "cleanup_error": None,
+                    "message": f"Archive verified: {receipt.name}; stopping server",
+                })
+            http_server.shutdown()
+
+        self.cleanup_worker = threading.Thread(
+            target=work, name="arepo-camera-archive-cleanup", daemon=False)
+        self.cleanup_worker.start()
+        return {"status": "archive_started", "cached_inputs": len(cached_inputs)}
 
     def catalog_payload(self) -> dict[str, Any]:
         if self.catalog is None:
@@ -378,14 +432,8 @@ def _handler(state: ViewerState) -> type[BaseHTTPRequestHandler]:
                 return
             try:
                 if self.path == "/api/shutdown":
-                    if not state.cleanup_configured:
-                        raise ValueError(
-                            "restart the server with --cleanup-on-close and a "
-                            "unique --sync-back-destination")
-                    self._json(HTTPStatus.ACCEPTED, {"status": "archive_queued"})
-                    threading.Thread(
-                        target=self.server.shutdown,
-                        name="arepo-camera-server-shutdown", daemon=True).start()
+                    result = state.start_cleanup(self.server)
+                    self._json(HTTPStatus.ACCEPTED, result)
                     return
                 length = int(self.headers.get("Content-Length", "0"))
                 if length <= 0 or length > 10_000_000:
