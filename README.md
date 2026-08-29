@@ -157,6 +157,20 @@ draft. The verification panel reports the active immutable camera and exact
 display values. Applying a preset or override appends a binding and never
 rewrites camera geometry.
 
+Compile a finished review into backend-neutral intent rows and native config
+overlays without changing any camera geometry:
+
+```bash
+arepo-camera-lab compile-render-intent \
+  --review-bundle /absolute/path/stellar_camera_review_bundle_v002.json \
+  --output-directory /absolute/path/render-intents-v001
+```
+
+Every pose must have a saved style binding. The compiler keeps WebGL-only point
+size, opacity, and point budget separate from the shared camera, scalar range,
+palette, gamma, saturation, and brightness contract. Output is no-clobber and
+includes a SHA-256 manifest.
+
 ### Batch-capture saved alternatives
 
 Render every no-clobber saved camera alternative through the same WebGL point

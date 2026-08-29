@@ -8,7 +8,7 @@ from unittest import mock
 
 import numpy as np
 
-from arepo_camera_lab import catalog, cleanup, demo, fields, gallery, review, routes, server, spline, viewer, vtk_backend
+from arepo_camera_lab import catalog, cleanup, demo, fields, gallery, render_intent, review, routes, server, spline, viewer, vtk_backend
 
 
 class CameraLabTest(unittest.TestCase):
@@ -166,6 +166,63 @@ class CameraLabTest(unittest.TestCase):
                 state.save_review_bundle(mutated)
             with self.assertRaises(ValueError):
                 review.load_bundle(path, "0" * 64)
+
+    def test_review_bundle_compiles_exact_render_intents(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            source = root / "review.json"
+            scene_sha = "a" * 64
+            pose = {
+                "snapshot": 721, "pose_id": "pose-721-a",
+                "position_cm": [1.0, 2.0, 3.0],
+                "look_at_cm": [4.0, 5.0, 6.0],
+                "view_direction": [0.0, 0.0, 1.0], "up": [0.0, 1.0, 0.0],
+                "screen_half_extent_cm": 7.0, "scene_sha256": scene_sha,
+            }
+            style = {
+                "schema": review.STYLE_SCHEMA,
+                "channel": "rotational_fraction", "scale_mode": "linear",
+                "low": 0.003, "high": 0.999, "symlog_threshold": 0.2,
+                "palette": "copper_blue", "inversion": False,
+                "gamma": 3.0, "saturation": 0.8, "brightness": 1.5,
+                "point_size": 2.2, "opacity": 1.0, "point_budget": 1_000_000,
+                "canvas_size": {"width": 1920, "height": 1080},
+                "scene_sha256": scene_sha, "field_sidecar_sha256": "b" * 64,
+            }
+            payload = {
+                "schema": review.REVIEW_BUNDLE_SCHEMA,
+                "source_pose_bundle": {"schema": review.LEGACY_POSE_SCHEMA,
+                                        "sha256": "c" * 64},
+                "geometry": {"schema": review.LEGACY_POSE_SCHEMA,
+                             "alternatives": [pose]},
+                "style_presets": [{
+                    "schema": review.PRESET_SCHEMA, "preset_id": "preset-1",
+                    "name": "reviewed", "channel": "rotational_fraction",
+                    "created_at": "2026-01-01T00:00:00Z", "visual_state": style,
+                }],
+                "pose_style_bindings": [{
+                    "schema": review.BINDING_SCHEMA, "binding_id": "binding-1",
+                    "pose_id": "pose-721-a", "preset_id": "preset-1",
+                    "channel": "rotational_fraction",
+                    "created_at": "2026-01-01T00:00:01Z", "visual_state": style,
+                }],
+                "legacy_style_defaults": dict(review.EXPLICIT_LEGACY_DEFAULTS),
+            }
+            source.write_text(json.dumps(payload), encoding="utf-8")
+            output = root / "compiled"
+            compiled = render_intent.compile_bundle(source, output)
+            self.assertEqual(compiled["pose_count"], 1)
+            row = compiled["rows"][0]
+            self.assertEqual(row["camera"]["position_cm"], pose["position_cm"])
+            self.assertEqual(row["display"]["gamma"], 3.0)
+            self.assertEqual(row["optical"]["profile"], "separated_support_v075")
+            overlay = (output / row["native_overlay"]).read_text(encoding="utf-8")
+            self.assertIn("stellarPhysicalColorGamma = 3", overlay)
+            self.assertIn("stellarDisplayBrightness = 1.5", overlay)
+            self.assertIn("stellarPhysicalOpticalProfile = separated_support_v075", overlay)
+            self.assertTrue((output / "manifest.sha256").is_file())
+            with self.assertRaises(FileExistsError):
+                render_intent.compile_bundle(source, output)
 
     def test_demo_scene_is_valid(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

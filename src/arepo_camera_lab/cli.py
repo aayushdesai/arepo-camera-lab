@@ -8,7 +8,7 @@ import sys
 import webbrowser
 
 from . import catalog as scene_catalog
-from . import cleanup, demo, fields, gallery, review, routes, server, spline, viewer, vtk_backend
+from . import cleanup, demo, fields, gallery, render_intent, review, routes, server, spline, viewer, vtk_backend
 
 
 def _serve(args: argparse.Namespace) -> int:
@@ -177,6 +177,12 @@ def parser() -> argparse.ArgumentParser:
         help="Render every saved camera alternative across all physical channels")
     gallery.add_arguments(gallery_parser)
     gallery_parser.set_defaults(function=gallery.run)
+
+    intent_parser = commands.add_parser(
+        "compile-render-intent",
+        help="Compile immutable reviewed poses and styles for WebGL/native rendering")
+    render_intent.add_arguments(intent_parser)
+    intent_parser.set_defaults(function=render_intent.run)
 
     fields_parser = commands.add_parser(
         "fields", help="Build an explicit physical-field sidecar from HDF5")
