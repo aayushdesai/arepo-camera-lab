@@ -155,7 +155,7 @@ async function main() {
       const target = path.join(output, relative);
       await mkdir(path.dirname(target), {recursive: true});
       const state = await evaluate(client,
-        `window.AREPO_CAMERA_LAB_CAPTURE.prepare(${JSON.stringify(capture.pose)},${JSON.stringify(capture.channel)},${JSON.stringify(capture.settings)})`);
+        `window.AREPO_CAMERA_LAB_CAPTURE.prepare(${JSON.stringify(capture.pose)},${JSON.stringify(capture.channel)},${JSON.stringify(capture.settings)},${JSON.stringify(capture.visible_scene_binding ?? null)})`);
       const screenshot = await client.call('Page.captureScreenshot', {
         format: 'png', fromSurface: true, captureBeyondViewport: false,
       });
@@ -165,6 +165,7 @@ async function main() {
         pose_index: capture.pose_index,
         pose_id: capture.pose.pose_id ?? null,
         snapshot: Number(capture.pose.snapshot),
+        visible_scene_binding: capture.visible_scene_binding ?? null,
         channel: capture.channel,
         output: relative,
         sha256: digest(image),

@@ -372,6 +372,11 @@ latest verified catalog snapshot at or before that camera row, so sparse epochs
 are never presented as a continuously exported simulation. Display values are
 smoothly interpolated between the reviewed route poses.
 
+Each captured frame records camera time separately from the visible simulation
+snapshot. The frame plan binds the latter to exact catalog scene and field
+sidecar SHA-256 values. Interactive saved-pose loading still requires the pose's
+own snapshot and scene hash; spline capture does not weaken that guard.
+
 ```bash
 conda run --no-capture-output -n arepo-camera-lab arepo-camera-lab \
   capture-spline-movie \

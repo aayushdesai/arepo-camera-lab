@@ -19,6 +19,7 @@ from . import catalog, gallery, review, viewer
 
 MOVIE_SCHEMA = "arepo_camera_lab_spline_movie_v001"
 CAPTURE_RECORDS_SCHEMA = "arepo_camera_lab_capture_records_v001"
+VISIBLE_SCENE_BINDING_SCHEMA = "arepo_camera_lab_visible_scene_binding_v001"
 INTERPOLATED_NUMERIC_STYLE_FIELDS = (
     "low", "high", "symlog_threshold", "gamma", "saturation",
     "brightness", "point_size", "opacity",
@@ -161,15 +162,35 @@ def build_frame_plan(camera_rows: list[dict[str, Any]],
                      available_snapshots: list[int],
                      route_keyframes: list[dict[str, Any]],
                      bindings: dict[str, dict[str, Any]],
-                     max_points: int) -> list[dict[str, Any]]:
+                     max_points: int,
+                     input_bindings: dict[int, dict[str, str]]) -> list[dict[str, Any]]:
     frames = []
     for frame_index, camera in enumerate(camera_rows):
         camera_snapshot = int(camera["snapshot"])
+        simulation_snapshot = visible_snapshot(
+            camera_snapshot, available_snapshots)
+        if simulation_snapshot not in input_bindings:
+            raise ValueError(
+                f"visible snapshot {simulation_snapshot} has no input binding")
+        source = input_bindings[simulation_snapshot]
+        scene_sha = str(source.get("scene_sha256", "")).lower()
+        sidecar_sha = str(source.get("field_sidecar_sha256", "")).lower()
+        for label, digest in (("scene", scene_sha), ("field sidecar", sidecar_sha)):
+            if len(digest) != 64 or any(character not in "0123456789abcdef"
+                                        for character in digest):
+                raise ValueError(
+                    f"visible snapshot {simulation_snapshot} has invalid {label} SHA-256")
         frames.append({
             "frame_index": frame_index,
             "camera_snapshot": camera_snapshot,
-            "visible_snapshot": visible_snapshot(
-                camera_snapshot, available_snapshots),
+            "visible_snapshot": simulation_snapshot,
+            "visible_scene_binding": {
+                "schema": VISIBLE_SCENE_BINDING_SCHEMA,
+                "camera_snapshot": camera_snapshot,
+                "visible_snapshot": simulation_snapshot,
+                "scene_sha256": scene_sha,
+                "field_sidecar_sha256": sidecar_sha,
+            },
             "pose": dict(camera, pose_id=f"spline-{camera_snapshot:04d}"),
             "settings": interpolate_reviewed_style(
                 camera_snapshot, route_keyframes, bindings, max_points),
@@ -227,7 +248,13 @@ def capture_movie(args: argparse.Namespace) -> dict[str, Any]:
     camera_rows = sample_path(read_physical_camera_path(camera_path), args.frame_step)
     frames = build_frame_plan(
         camera_rows, sorted(scene_catalog.frames), keyframes, bindings,
-        args.max_points)
+        args.max_points, {
+            snapshot: {
+                "scene_sha256": frame.scene_sha256,
+                "field_sidecar_sha256": frame.field_sidecar_sha256,
+            }
+            for snapshot, frame in scene_catalog.frames.items()
+        })
     snapshots = sorted({frame["visible_snapshot"] for frame in frames})
     cache = args.cache_directory.expanduser().resolve()
     resolved = (direct_catalog_inputs(scene_catalog, set(snapshots))
@@ -263,6 +290,7 @@ def capture_movie(args: argparse.Namespace) -> dict[str, Any]:
                 "captures": [{
                     "pose_index": frame["frame_index"] + 1,
                     "pose": frame["pose"],
+                    "visible_scene_binding": frame["visible_scene_binding"],
                     "channel": "rotational_fraction",
                     "settings": frame["settings"],
                     "output": f"frames/frame_{frame['frame_index']:06d}.png",
@@ -283,6 +311,24 @@ def capture_movie(args: argparse.Namespace) -> dict[str, Any]:
 
     if len(all_records) != len(frames):
         raise ValueError(f"captured {len(all_records)} frames; expected {len(frames)}")
+    records_by_index = {
+        int(record["pose_index"]) - 1: record for record in all_records
+    }
+    if len(records_by_index) != len(frames):
+        raise ValueError("capture records have duplicate or missing frame indices")
+    for frame in frames:
+        record = records_by_index.get(frame["frame_index"])
+        state = record.get("state", {}) if record else {}
+        if record is None or state.get("visible_scene_binding") != \
+                frame["visible_scene_binding"]:
+            raise ValueError(
+                f"frame {frame['frame_index']} visible-scene binding differs")
+        if int(state.get("camera_snapshot", -1)) != frame["camera_snapshot"] or \
+                int(state.get("snapshot", -1)) != frame["visible_snapshot"] or \
+                str(state.get("scene_sha256", "")) != \
+                frame["visible_scene_binding"]["scene_sha256"]:
+            raise ValueError(
+                f"frame {frame['frame_index']} capture provenance differs")
     expected_names = [f"frame_{index:06d}.png" for index in range(len(frames))]
     actual_names = sorted(path.name for path in frame_directory.glob("*.png"))
     if actual_names != expected_names:

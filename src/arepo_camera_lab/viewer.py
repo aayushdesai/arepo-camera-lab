@@ -919,9 +919,18 @@ for(const control of [channel,scaleMode,palette,rangeLow,rangeHigh,linthresh,inv
 timelinePanel.style.display='block';
 if(DATA.camera_path.length){pathSlider.max=DATA.camera_path.length-1;const show=i=>{const entry=DATA.camera_path[i];setCamera(entry);pathStatus.textContent=`camera path row ${entry.snapshot} (${i+1}/${DATA.camera_path.length}); visible cells remain AREPO snapshot ${DATA.scene.snapshot??'unknown'}`;};pathSlider.oninput=()=>show(+pathSlider.value);playButton.onclick=()=>{if(playing)return;playing=setInterval(()=>{let i=(+pathSlider.value+1)%DATA.camera_path.length;pathSlider.value=i;show(i);},50);};stopButton.onclick=()=>{clearInterval(playing);playing=null;};show(0);}else{pathSlider.disabled=true;playButton.disabled=true;stopButton.disabled=true;pathStatus.textContent='No spline is loaded. Save one camera pose at each of at least two different snapshots, compile them, then rebuild this viewer with --camera-path.';}
 document.onkeydown=e=>{if(e.key==='k'||e.key==='K')savePoseOverrideButton.click();if(e.code==='Space'){e.preventDefault();if(playing)stopButton.click();else if(DATA.camera_path.length)playButton.click();else statusText.textContent='Space plays a compiled path; this single-scene viewer has none loaded yet.';}if(e.key==='r'||e.key==='R')resetButton.click();};
-function setPhysicalPose(entry){
-  if(Number(entry.snapshot)!==Number(DATA.scene.snapshot))throw new Error(`Pose snapshot ${entry.snapshot} does not match visible snapshot ${DATA.scene.snapshot}.`);
-  if(String(entry.scene_sha256)!==String(DATA.scene.sha256))throw new Error('Pose scene SHA-256 does not match the visible scene.');
+function setPhysicalPose(entry,visibleSceneBinding=null){
+  const expectedSnapshot=visibleSceneBinding===null?Number(entry.snapshot):Number(visibleSceneBinding.visible_snapshot);
+  const expectedSceneSha=visibleSceneBinding===null?String(entry.scene_sha256):String(visibleSceneBinding.scene_sha256);
+  if(visibleSceneBinding!==null){
+    if(visibleSceneBinding.schema!=='arepo_camera_lab_visible_scene_binding_v001')throw new Error('Capture visible-scene binding schema is invalid.');
+    if(Number(visibleSceneBinding.camera_snapshot)!==Number(entry.snapshot))throw new Error('Capture camera snapshot does not match the interpolated camera row.');
+  }
+  if(expectedSnapshot!==Number(DATA.scene.snapshot))throw new Error(`Expected visible snapshot ${expectedSnapshot} does not match loaded snapshot ${DATA.scene.snapshot}.`);
+  if(expectedSceneSha!==String(DATA.scene.sha256))throw new Error('Expected scene SHA-256 does not match the visible scene.');
+  const expectedSidecar=visibleSceneBinding?.field_sidecar_sha256;
+  const loadedSidecar=DATA.scene.auxiliary_fields?.sha256;
+  if(expectedSidecar!==undefined&&expectedSidecar!==null&&String(expectedSidecar)!==String(loadedSidecar))throw new Error('Expected field-sidecar SHA-256 does not match the visible scene.');
   const center=DATA.scene.center_cm,radius=DATA.scene.display_radius_cm;
   const look=entry.look_at_cm.map(Number),forward=entry.view_direction.map(Number),up=entry.up.map(Number);
   const target=look.map((value,index)=>(value-center[index])/radius),scale=Number(entry.screen_half_extent_cm)/radius;
@@ -933,9 +942,9 @@ function setCaptureMode(enabled){
   batchCapture=Boolean(enabled);document.body.classList.toggle('capture-mode',batchCapture);
   resize();
 }
-async function prepareCapture(entry,name,settings={}){
+async function prepareCapture(entry,name,settings={},visibleSceneBinding=null){
   if(!DATA.channels[name])throw new Error(`Unknown physical channel ${name}.`);
-  setCaptureMode(true);setPhysicalPose(entry);channel.value=name;loadChannel(name);
+  setCaptureMode(true);setPhysicalPose(entry,visibleSceneBinding);channel.value=name;loadChannel(name);
   palette.value=settings.palette||'copper_blue';scaleMode.value=settings.scale_mode||currentChannel.default_scale;
   if(Number.isFinite(Number(settings.low)))setNumericValue('low',rangeLow,Number(settings.low));
   if(Number.isFinite(Number(settings.high)))setNumericValue('high',rangeHigh,Number(settings.high));
@@ -947,7 +956,7 @@ async function prepareCapture(entry,name,settings={}){
   if(Number.isFinite(Number(settings.brightness)))brightness.value=String(settings.brightness);
   invert.checked=Boolean(settings.invert);symlogControl.style.display=scaleMode.value==='symlog'?'block':'none';updateColorBar();updateChannelMeta();
   resize();render();gl.finish();await new Promise(resolve=>requestAnimationFrame(resolve));
-  return {schema:'arepo_camera_lab_capture_state_v001',snapshot:Number(DATA.scene.snapshot),scene_sha256:DATA.scene.sha256,pose_id:entry.pose_id??null,channel:name,palette:palette.value,scale_mode:scaleMode.value,low:rangeState.low,high:rangeState.high,linthresh:rangeState.linthresh,point_size:Number(pointSize.value),opacity:Number(opacity.value),gamma:Number(gamma.value),saturation:Number(saturation.value),brightness:Number(brightness.value),invert:invert.checked,point_count:DATA.point_count,camera_pose:pose(),canvas:{width:canvas.width,height:canvas.height}};
+  return {schema:'arepo_camera_lab_capture_state_v001',camera_snapshot:Number(entry.snapshot),snapshot:Number(DATA.scene.snapshot),scene_sha256:DATA.scene.sha256,visible_scene_binding:visibleSceneBinding,pose_id:entry.pose_id??null,channel:name,palette:palette.value,scale_mode:scaleMode.value,low:rangeState.low,high:rangeState.high,linthresh:rangeState.linthresh,point_size:Number(pointSize.value),opacity:Number(opacity.value),gamma:Number(gamma.value),saturation:Number(saturation.value),brightness:Number(brightness.value),invert:invert.checked,point_count:DATA.point_count,camera_pose:pose(),canvas:{width:canvas.width,height:canvas.height}};
 }
 window.AREPO_CAMERA_LAB_CAPTURE={schema:'arepo_camera_lab_capture_api_v001',channels:[...BASE_CHANNEL_NAMES],scene:{...DATA.scene},prepare:prepareCapture,setCaptureMode};
 render();

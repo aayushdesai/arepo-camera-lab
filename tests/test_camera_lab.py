@@ -435,10 +435,41 @@ class CameraLabTest(unittest.TestCase):
         self.assertEqual(style["brightness"], 1.5)
         self.assertEqual(style["point_budget"], 500_000)
         plan = movie.build_frame_plan(
-            sampled, [31, 41], keyframes, bindings, 500_000)
+            sampled, [31, 41], keyframes, bindings, 500_000, {
+                31: {"scene_sha256": "a" * 64,
+                     "field_sidecar_sha256": "b" * 64},
+                41: {"scene_sha256": "c" * 64,
+                     "field_sidecar_sha256": "d" * 64},
+            })
         self.assertEqual(
             [row["visible_snapshot"] for row in plan], [31, 31, 31, 41])
         self.assertEqual(plan[0]["pose"]["pose_id"], "spline-0031")
+        self.assertEqual(plan[1]["visible_scene_binding"], {
+            "schema": movie.VISIBLE_SCENE_BINDING_SCHEMA,
+            "camera_snapshot": 35,
+            "visible_snapshot": 31,
+            "scene_sha256": "a" * 64,
+            "field_sidecar_sha256": "b" * 64,
+        })
+
+    def test_spline_movie_requires_bound_visible_scene(self) -> None:
+        camera = [{
+            "snapshot": 35, "position_cm": [0.0, 0.0, -4.0],
+            "look_at_cm": [0.0, 0.0, 0.0],
+            "view_direction": [0.0, 0.0, 1.0], "up": [0.0, 1.0, 0.0],
+            "screen_half_extent_cm": 1.0, "time_seconds": 35.0,
+        }]
+        style = {
+            "channel": "rotational_fraction", "scale_mode": "linear",
+            "low": 0.0, "high": 1.0, "symlog_threshold": 0.1,
+            "palette": "copper_blue", "inversion": False, "gamma": 2.0,
+            "saturation": 0.8, "brightness": 1.0, "point_size": 2.0,
+            "opacity": 1.0,
+        }
+        with self.assertRaisesRegex(ValueError, "no input binding"):
+            movie.build_frame_plan(
+                camera, [31], [{"snapshot": 31, "pose_id": "p"}],
+                {"p": style}, 100, {})
 
     def test_spline_movie_direct_catalog_inputs(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
