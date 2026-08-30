@@ -23,6 +23,7 @@ classifiers = [
 arepo-camera-lab = "arepo_camera_lab.cli:main"
 arepo-camera-spline = "arepo_camera_lab.spline:main"
 arepo-camera-routes = "arepo_camera_lab.routes:main"
+arepo-camera-orbit = "arepo_camera_lab.orbit:main"
 
 [project.urls]
 Repository = "https://github.com/aayushdesai/arepo-camera-lab"

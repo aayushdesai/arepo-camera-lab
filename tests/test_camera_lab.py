@@ -9,7 +9,7 @@ from unittest import mock
 
 import numpy as np
 
-from arepo_camera_lab import catalog, cleanup, demo, fields, gallery, movie, render_intent, review, routes, server, spline, transfer, viewer, vtk_backend
+from arepo_camera_lab import catalog, cleanup, demo, fields, gallery, movie, orbit, render_intent, review, routes, server, spline, transfer, viewer, vtk_backend
 
 
 class CameraLabTest(unittest.TestCase):
@@ -402,6 +402,55 @@ class CameraLabTest(unittest.TestCase):
         self.assertLess(
             max(row["orientation_deg_per_frame"] for row in diagnostics),
             1.5)
+
+    def test_physical_axis_orbit_selects_and_compiles_monotonically(self) -> None:
+        template = []
+        for snapshot in range(101):
+            template.append([
+                float(snapshot), float(snapshot),
+                4.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0,
+                0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0])
+        frames = orbit.transported_axis_frames(template)
+
+        def pose(snapshot: int, degrees: float, identity: str) -> dict:
+            angle = np.deg2rad(degrees)
+            radial = np.array([np.cos(angle), np.sin(angle), 0.0])
+            return {
+                "snapshot": snapshot,
+                "look_at_cm": [0.0, 0.0, 0.0],
+                "view_direction": (-radial).tolist(),
+                "up": [0.0, 0.0, 1.0],
+                "screen_half_extent_cm": 1.0,
+                "pose_id": identity,
+            }
+
+        grouped = {
+            0: [pose(0, 0.0, "start"), pose(0, 180.0, "start-wrong")],
+            50: [pose(50, 90.0, "middle"), pose(50, 350.0, "middle-wrong")],
+            100: [pose(100, 180.0, "end"), pose(100, 10.0, "end-wrong")],
+        }
+        selected, route_diagnostics = orbit.select_orbit_route(
+            grouped, frames, set(), "positive", 0.5)
+        self.assertEqual(
+            [row["pose_id"] for row in selected], ["start", "middle", "end"])
+        self.assertAlmostEqual(
+            route_diagnostics[-1]["orbit_turns_cumulative"], 0.5)
+
+        rows, diagnostics = orbit.compile_orbit_spline(
+            template, selected, 0.25, "positive")
+        self.assertEqual(len(rows), 101)
+        self.assertTrue(all(
+            row["orbit_phase_delta_degrees"] >= -1.0e-8
+            for row in diagnostics))
+        for snapshot, expected in ((0, grouped[0][0]),
+                                   (50, grouped[50][0]),
+                                   (100, grouped[100][0])):
+            row = rows[snapshot]
+            view = np.asarray(row[5:8]) - np.asarray(row[2:5])
+            view /= np.linalg.norm(view)
+            np.testing.assert_allclose(
+                view, expected["view_direction"], atol=1.0e-12)
+            np.testing.assert_allclose(row[8:11], expected["up"], atol=1.0e-12)
 
     def test_spline_movie_frame_and_reviewed_style_plan(self) -> None:
         rows = [

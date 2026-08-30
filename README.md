@@ -328,6 +328,27 @@ the large SQUAD overshoot that is possible between widely separated poses.
 `--orientation-mode squad` remains available for closely spaced poses. Both
 modes produce a continuously moving camera rather than a hard cut.
 
+Saved alternatives are independent viewpoints, not an ordered orbit. For a
+camera that travels in one direction around the evolving physical axis, select
+and compile the orbit explicitly:
+
+```bash
+arepo-camera-lab orbit \
+  --poses stellar_camera_poses.json \
+  --template accepted_camera_path.tsv \
+  --omit 821 \
+  --direction positive \
+  --output-route reviewed_orbit.json \
+  --output reviewed_orbit.camera_path_v055.tsv \
+  --diagnostics reviewed_orbit.diagnostics.tsv
+```
+
+The orbit compiler keeps the accepted look-at and framing as its composition
+reference, chooses exact saved alternatives with monotonically unwrapped
+orbital phase, and aligns the horizon with the transported physical axis.
+Diagnostics include orbital phase and its signed per-frame increment; a phase
+reversal is a hard failure. The legacy shortest-arc spline remains unchanged.
+
 ## Scene format
 
 Version `0.4` reads portable `ARVTKSTARV052A` full-cell scenes containing cell

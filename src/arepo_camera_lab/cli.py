@@ -8,7 +8,7 @@ import sys
 import webbrowser
 
 from . import catalog as scene_catalog
-from . import cleanup, demo, fields, gallery, movie, render_intent, review, routes, server, spline, viewer, vtk_backend
+from . import cleanup, demo, fields, gallery, movie, orbit, render_intent, review, routes, server, spline, viewer, vtk_backend
 
 
 def _serve(args: argparse.Namespace) -> int:
@@ -173,6 +173,12 @@ def parser() -> argparse.ArgumentParser:
                                default=(820, 821),
                                metavar=("LEFT_SNAPSHOT", "RIGHT_SNAPSHOT"))
     routes_parser.set_defaults(function=_routes)
+
+    orbit_parser = commands.add_parser(
+        "orbit",
+        help="Select exact alternatives and compile one monotonic physical-axis orbit")
+    orbit.add_arguments(orbit_parser)
+    orbit_parser.set_defaults(function=orbit.run)
 
     gallery_parser = commands.add_parser(
         "capture-gallery",
