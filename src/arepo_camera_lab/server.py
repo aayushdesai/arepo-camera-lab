@@ -9,6 +9,7 @@ import json
 import math
 from pathlib import Path
 import threading
+import sys
 import uuid
 from typing import Any
 
@@ -212,6 +213,7 @@ class ViewerState:
                 scene_sha256, snapshot, None, field_sidecar)
             payload["scene"]["point_budget"] = max_points
             payload["scene"]["native_mesh_available"] = bool(header["num_edges"] and not header["invalid_neighbor_edges"])
+            payload["scene"]["native_volume_available"] = payload["scene"]["native_mesh_available"] and sys.platform == "darwin"
             if self.review_bundle is not None:
                 payload["review_workspace"] = review.public_workspace(
                     self.review_bundle, self.catalog, requested_pose_id)

@@ -2,13 +2,14 @@
 
 `arepo-camera-lab` is a local, interactive camera and physical-channel explorer
 for portable AREPO full-cell scenes. The live browser controls can display
-native 3D Voronoi faces through a local VTK renderer, or the existing fast WebGL
-point preview. The separate VTK point/glyph explorer remains available.
+native Voronoi volume rendering on the Mac's Metal GPU, explicit cell faces
+through VTK, or the existing fast WebGL point preview. The separate VTK
+point/glyph explorer remains available.
 
-The native face view reconstructs polyhedra from AREPO-VTK's stored neighbour
-planes. It is a geometry and physical-field preview. The ArepoVTK-stellar/ArepoRT
-ray tracer remains the backend for emission/absorption integration and movies
-that require that optical model.
+Both native views use AREPO-VTK's stored neighbour planes. The volume view
+integrates physical path lengths through cells with an illustrative display
+transfer; the face view exposes their polyhedral geometry. The existing
+ArepoVTK-stellar/ArepoRT production optical model remains separate.
 
 Development follows [document-as-you-build guidance](CONTRIBUTING.md):
 usage, implementation decisions, verification, and remaining work stay current
@@ -58,51 +59,59 @@ does not delete data because reloads and accidental tab closes are ambiguous.
 For one ad-hoc local file, `serve --scene ... --field-sidecar ... --snapshot
 721` remains available, but it does not create a multi-epoch dropdown.
 
-### Native Voronoi faces and measurements
+### Native Voronoi volume, faces, and measurements
 
-In the live viewer, choose **Native Voronoi cells**. Complete v052 connectivity
-is required. All native cell records and their field bindings remain available;
-the point-budget selector affects only the point preview. By default VTK draws
-the boundary of cells in the chosen physical range. **Interior faces** also
-draws interfaces within that selection, up to a bounded vertex budget.
+On macOS, the live viewer initially selects **Native cell volume · Metal**.
+It traverses the full native Voronoi connectivity on the local GPU and integrates
+inside cells. **Native cell faces · VTK** retains the explicit polyhedra,
+optional edges, and interior faces for geometry debugging. The point-budget
+selector affects only the point preview. Both native modes need complete v052
+connectivity; the Metal view also requires the Xcode Command Line Tools.
 
-**Hide cells below density** controls visibility independently of the colour
-channel. Its initial value is 100 g cm^-3; lower it to see diffuse outflows.
-**Fit visible mesh** frames the current selection without editing an imported
+Choose a **Volume transparency** preset for the **Disk**, **Through to the
+remnant**, or **Diffuse outflow**. These change density visibility and optical
+weighting. The field colour, camera, and original pose remain independent.
+**Hide cells below density** starts at 100 g cm^-3; the outflow preset lowers it
+to 0.01 g cm^-3. Advanced controls expose reference density, physical path
+length, and density weighting. These are display settings, not calibrated
+radiation transport. High quality integrates four deterministic subpixel rays;
+a smaller frame renders during orbit/zoom and refines after interaction stops.
+
+**Fit visible mesh** frames the visible cells without editing an imported
 camera alternative. Orbit, pan, deep zoom, all physical/derived channels,
 palettes, ranges, gamma, saturation, brightness, opacity, presets, and pose
-review use the existing controls. Point size applies to the point preview.
-Mesh options are saved with new style presets and browser-session archives.
+review retain their controls. Point size applies to the point preview. Native
+view and volume settings are saved with style presets and session archives.
 
-The bottom-right overlay shows the loaded snapshot's simulation time and index,
-a zoom-dependent physical scale bar, and the active field legend. Choose
-centimetres or kilometres, or let the scale bar select automatically. The
-two-click ruler measures the 3D separation of picked cell surfaces in mesh mode;
-the point preview labels its screen-plane distance **projected**. World-space
-ruler points, cell IDs, units, and the source scene hash are retained in the
-browser-session record.
+The bottom-right overlay shows the displayed snapshot's simulation time and
+index, a calibrated scale bar, and the field-colour legend. Choose centimetres,
+kilometres, or automatic units. The two-click ruler measures **3D surface**
+distance in the face view. Volume and point views measure **projected** distance
+in the camera plane, because a transparent volume has no unique surface.
+Measurements retain their coordinate convention, scene hash, and camera plane;
+face measurements also retain native cell IDs.
 
-The mesh worker is owned by the local server. **Quit**, Ctrl-C, and successful
-archive shutdown stop it locally, including an in-progress face build. Quitting
-does not require a cluster connection. Camera and colour changes reuse resident
-geometry; changes to visibility rebuild the affected surface. The native face
-adapter requires a C++17 compiler (`clang++` on macOS).
+The native worker is owned by the local server. **Quit**, Ctrl-C, and successful
+archive shutdown stop it locally, including an active compiler or render.
+Quitting does not require a cluster connection. Volume camera changes reuse
+resident geometry and field buffers; surface visibility changes rebuild faces.
 
 To save annotated PNGs and exact camera/style/hash records:
 
 ```bash
 arepo-camera-lab capture-mesh \
   --config /absolute/path/native_capture.json \
-  --output-directory /absolute/path/native-preview-v001
+  --output-directory /absolute/path/native-preview-v002
 ```
 
-See [the native viewer notes](docs/voronoi-raytrace-backend.md) and
-[capture configuration](examples/native-capture.example.json). Existing
-`capture-gallery` and `capture-spline-movie` retain their WebGL point-rendering
-behavior.
+See the [native viewer notes](docs/voronoi-raytrace-backend.md),
+[volume capture example](examples/native-volume-capture.example.json), and
+[face capture example](examples/native-capture.example.json). Existing
+`capture-gallery` and `capture-spline-movie` retain their point-rendering
+behavior. A native-volume movie export has not been added to those commands.
 
-This branch currently reads prepared v052 scenes and ID-bound sidecars. Direct
-loading of arbitrary raw HDF5 snapshots through AREPO-VTK is not implemented.
+This branch reads prepared v052 scenes and ID-bound sidecars. Direct loading
+of arbitrary raw HDF5 snapshots through AREPO-VTK is not implemented.
 
 For the native VTK desktop explorer, including magnetic-vector glyphs when a
 field sidecar is supplied:
@@ -421,15 +430,14 @@ The data objects are deliberately separate:
 5. ArepoRT consumes the accepted camera and transfer settings for exact Voronoi
    ray traversal and production images.
 
-## VTK and exact Voronoi rendering
+## Native rendering and production movies
 
-The WebGL and native VTK points are interactive scouting renderers. VTK gives a
-more capable local desktop view, scalar pipelines, and magnetic-vector glyphs,
-but cell-center points are not volume integration through Voronoi cells. A
-separate progressive ArepoRT companion is planned for exact cell traversal
-while the camera moves. See
-[docs/voronoi-raytrace-backend.md](docs/voronoi-raytrace-backend.md) for the
-boundary between the two systems.
+The point views are scouting renderers. VTK adds explicit native cell faces
+and magnetic-vector glyphs. The Metal companion now integrates rays directly
+through the native cells for local volume previews. Its illustrative opacity
+model is separate from the production ArepoRT optical profiles. See
+[the backend notes](docs/voronoi-raytrace-backend.md) for the geometry, transfer,
+measurement, and verification contracts.
 
 ## Development
 

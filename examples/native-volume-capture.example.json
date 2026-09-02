@@ -1,0 +1,45 @@
+{
+  "scene_path": "/absolute/path/to/scene_v052.bin",
+  "scene_sha256": "replace-with-the-verified-64-character-scene-sha256",
+  "field_sidecar_path": "/absolute/path/to/snapshot.fields.npz",
+  "field_sidecar_sha256": "replace-with-the-verified-64-character-sidecar-sha256",
+  "snapshot": 721,
+  "frames": [
+    {
+      "name": "native-volume-disk",
+      "title": "Disk structure",
+      "subtitle": "Native-cell volume; colour shows rotational fraction; density controls transparency",
+      "fit_visible": true,
+      "parameters": {
+        "representation": "volume",
+        "camera": {"target": [0, 0, 0], "forward": [0.9, 0, -0.4], "up": [0, 0, 1], "scale": 0.1},
+        "style": {
+          "channel": "rotational_fraction", "scale_mode": "linear", "low": 0, "high": 1,
+          "linthresh": 1, "palette": "copper_blue", "gamma": 1,
+          "saturation": 1, "brightness": 1, "opacity": 0.72
+        },
+        "density_floor": 100,
+        "volume": {"density_reference": 10000, "density_power": 0.5, "opacity_length_cm": 1000000000, "floor_softening_dex": 1},
+        "subpixel_samples": 4, "width": 1440, "height": 960
+      }
+    },
+    {
+      "name": "native-volume-outflow",
+      "title": "Outflow structure",
+      "subtitle": "Native-cell volume; colour shows axial motion; density controls transparency",
+      "fit_visible": true,
+      "parameters": {
+        "representation": "volume",
+        "camera": {"target": [0, 0, 0], "forward": [0.9, 0, -0.4], "up": [0, 0, 1], "scale": 0.1},
+        "style": {
+          "channel": "outward_axial_velocity", "scale_mode": "symlog", "low": -200000000, "high": 200000000,
+          "linthresh": 1000000, "palette": "blue_red", "gamma": 1,
+          "saturation": 1, "brightness": 1, "opacity": 0.72
+        },
+        "density_floor": 0.01,
+        "volume": {"density_reference": 10000, "density_power": 0.5, "opacity_length_cm": 1000000000, "floor_softening_dex": 1},
+        "subpixel_samples": 4, "width": 1440, "height": 960
+      }
+    }
+  ]
+}

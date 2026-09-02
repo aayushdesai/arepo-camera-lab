@@ -1,4 +1,4 @@
-"""Reproducible native mesh PNGs with physical time, scale, and field legends."""
+"""Reproducible native volume/face PNGs with physical time, scale, and field legends."""
 from __future__ import annotations
 
 import hashlib
@@ -69,8 +69,9 @@ def annotate(png: bytes, report: dict, meta: dict, channel_meta: dict,
     draw.text((bx, by + 45), f'{style["low"]:.2e}', font=font(12), fill=text)
     draw.text((x + panel_width - 15, by + 45), f'{style["high"]:.2e}  ({style["scale_mode"]})',
               font=font(12), fill=text, anchor="ra")
-    draw.text((28, height - 42),
-              f'{report["selected_cells"]:,} cells in range  |  {report["faces"]:,} native faces',
+    detail = (f'{report["rays"]:,} rays through native cells' if report.get("representation") == "volume"
+              else f'{report["faces"]:,} native faces')
+    draw.text((28, height - 42), f'{report["selected_cells"]:,} visible cells  |  {detail}',
               font=font(14), fill=muted)
     output = io.BytesIO()
     picture.save(output, format="PNG")
@@ -108,7 +109,7 @@ def capture(config_path: Path, output: Path) -> dict:
     output.mkdir(parents=True, exist_ok=False)
     (output / "capture_config.json").write_text(json.dumps(config, indent=2))
     renderer = NativeMeshRenderer(config, output, lambda message: print(message, flush=True))
-    rows = []
+    rows, capabilities = [], {}
     try:
         for entry in config["frames"]:
             name = entry["name"]
@@ -123,11 +124,12 @@ def capture(config_path: Path, output: Path) -> dict:
                     "scale": pose["screen_half_extent_cm"] / renderer.meta["display_radius_cm"],
                     "forward": pose["view_direction"], "up": pose["up"],
                 }
+            diagnostic_fit = bool(entry.get("fit_visible", params.get("fit_visible", False)))
+            params["fit_visible"] = diagnostic_fit
             png, report = renderer.render(params)
-            if entry.get("fit_visible"):
-                params["camera"] = fit_camera(renderer.mesh.points, params["camera"],
-                                              report["width"] / report["height"])
-                png, report = renderer.render(params)
+            params["camera"] = report["camera"]
+            params["fit_visible"] = False  # The recorded camera now reproduces the fit exactly.
+            capabilities[report["backend"]] = renderer.capabilities
             channel = renderer.channel_meta.get(report["style"]["channel"],
                                                  {"label": report["style"]["channel"], "units": "derived"})
             png, annotations = annotate(png, report, renderer.meta, channel,
@@ -136,20 +138,22 @@ def capture(config_path: Path, output: Path) -> dict:
             with path.open("xb") as handle:
                 handle.write(png)
             report.update({"annotations": annotations, "scene_metadata": renderer.meta,
-                           "capture_parameters": params, "diagnostic_fit": bool(entry.get("fit_visible")),
+                           "capture_parameters": params, "diagnostic_fit": diagnostic_fit,
                            "png": path.name, "png_sha256": hashlib.sha256(png).hexdigest()})
             with (output / f"{name}.json").open("x") as handle:
                 json.dump(report, handle, indent=2, allow_nan=False)
             rows.append({"png": path.name, "sha256": report["png_sha256"], "report": f"{name}.json"})
-            print(json.dumps({"frame": name, "faces": report["faces"],
+            print(json.dumps({"frame": name, "backend": report["backend"],
+                              "faces": report.get("faces"), "gpu_seconds": report.get("gpu_seconds"),
                               "render_seconds": report["render_seconds"]}), flush=True)
-        (output / "graphics_capabilities.txt").write_text(renderer.capabilities or "")
-        manifest = {"schema": "arepo_camera_lab_native_mesh_capture_v001", "frames": rows,
+        (output / "graphics_capabilities.txt").write_text("\n\n".join(value or "" for value in capabilities.values()))
+        manifest = {"schema": "arepo_camera_lab_native_mesh_capture_v002", "frames": rows,
                     "scene_sha256": actual, "field_sidecar_sha256": config.get("field_sidecar_sha256"),
-                    "source_sha256": {p.name: viewer.sha256(p) for p in
-                                      [Path(__file__), Path(__file__).with_name("mesh_render.py"),
-                                       Path(__file__).with_name("native_mesh.cpp")]},
-                    "native_builder_sha256": viewer.sha256(renderer.binary)}
+                    "source_sha256": {name: viewer.sha256(Path(__file__).with_name(name)) for name in
+                                      ["mesh_capture.py", "mesh_render.py", "native_mesh.cpp", "viewer.py",
+                                       "volume_render.py", "native_volume.mm", "native_volume.metal"]},
+                    "native_builder_sha256": viewer.sha256(renderer.binary) if renderer.binary else None,
+                    "metal_bridge_sha256": viewer.sha256(renderer.volume.binary) if renderer.volume else None}
         (output / "manifest.json").write_text(json.dumps(manifest, indent=2))
         return manifest
     finally:

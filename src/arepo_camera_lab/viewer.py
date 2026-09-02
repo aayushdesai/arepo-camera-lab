@@ -596,19 +596,29 @@ body.capture-mode #view, body.capture-mode #meshImage { left: 0; width: 100vw; h
   <h1>Stellar Camera Lab</h1>
   <div id="sceneMeta" class="meta"></div>
   <h2>3D view</h2>
-  <label for="renderMode">Renderer</label><select id="renderMode"><option value="mesh">Native Voronoi cells</option><option value="points">Point preview</option></select>
+  <label for="renderMode">Renderer</label><select id="renderMode"><option value="volume">Native cell volume · Metal</option><option value="mesh">Native cell faces · VTK</option><option value="points">Point preview</option></select>
   <label for="meshDensityFloor">Hide cells below density (g cm⁻³)</label><input id="meshDensityFloor" type="number" value="100" min="0" step="any">
-  <div class="meta">Mesh visibility only; lower this to reveal diffuse outflows. The colour channel stays independent.</div>
+  <div class="meta">Lower this to reveal diffuse material. Colour and transparency are controlled separately.</div>
+  <div id="volumeControls">
+    <label for="volumeProfile">Volume transparency</label><select id="volumeProfile"><option value="disk">Disk</option><option value="remnant">Through to the remnant</option><option value="outflow">Diffuse outflow</option><option value="custom">Custom</option></select>
+    <details><summary>Adjust transparency</summary>
+      <label for="volumeDensityReference">Reference density (g cm⁻³)</label><input id="volumeDensityReference" type="number" value="10000" min="1e-30" step="any">
+      <label for="volumeOpacityLength">Reference path length (km)</label><input id="volumeOpacityLength" type="number" value="10000" min="1e-30" step="any">
+      <label for="volumeDensityPower">Density weighting</label><input id="volumeDensityPower" type="number" value="0.5" min="0" max="2" step="0.1">
+      <div class="meta">Opacity applies at this density over this path length. Longer paths make the view more transparent. These are display settings.</div>
+    </details>
+    <label for="volumeQuality">Image quality</label><select id="volumeQuality"><option value="4">High · antialiased</option><option value="1">Fast</option></select>
+  </div>
   <button id="meshFit">Fit visible mesh</button>
   <div class="check"><input id="meshEdges" type="checkbox"><label for="meshEdges">Show cell edges</label></div>
   <div class="check"><input id="meshInterior" type="checkbox"><label for="meshInterior">Show interior cell faces</label></div>
   <div class="check"><input id="meshLighting" type="checkbox" checked><label for="meshLighting">Light cell faces</label></div>
-  <div id="meshNotice" class="meta"></div><button id="meshRetry" type="button">Refresh mesh</button>
+  <div id="meshNotice" class="meta"></div><button id="meshRetry" type="button">Refresh native view</button>
   <h2>Time and scale</h2>
   <div class="check"><input id="showAnnotations" type="checkbox" checked><label for="showAnnotations">Show time, scale, and field legend</label></div>
   <label for="measureUnit">Distance units</label><select id="measureUnit"><option value="auto">Automatic</option><option value="cm">Centimeters</option><option value="km">Kilometers</option></select>
   <div class="check"><input id="rulerToggle" type="checkbox"><label for="rulerToggle">Two-point ruler</label></div>
-  <button id="clearRuler" type="button">Clear measurement</button><div id="rulerStatus" class="meta">Mesh picks measure 3D distance; point-view picks measure projected distance.</div>
+  <button id="clearRuler" type="button">Clear measurement</button><div id="rulerStatus" class="meta">Face picks measure 3D surface distance. Volume and point views measure projected distance.</div>
   <h2>Display</h2>
   <label for="channel">Physical channel</label><select id="channel"></select>
   <div id="channelMeta" class="meta"></div>
@@ -797,7 +807,7 @@ function safeRange(){let low=rangeState.low,high=rangeState.high;if(scaleMode.va
 function updateColorBar(){const gradient=paletteGradients[palette.value];colorBar.style.background=`linear-gradient(90deg,${invert.checked?gradient.split(',').reverse().join(','):gradient})`;}
 function updateChannelMeta(){const [low,high]=safeRange(),invalid=currentChannel.nonfinite_count?` | ${currentChannel.nonfinite_count.toLocaleString()} invalid hidden`:'';channelMeta.textContent=`${currentChannel.label} [${currentChannel.units}] | data ${formattedNumber(currentChannel.data_min)} to ${formattedNumber(currentChannel.data_max)} | visible ${formattedNumber(low)} to ${formattedNumber(high)}${invalid}`;}
 function applyPreset(){if(rangePreset.value==='custom')return;let low,high;if(rangePreset.value==='symmetric'){const bound=Math.max(Math.abs(currentChannel.percentiles[1]),Math.abs(currentChannel.percentiles[99]));low=-bound;high=bound;}else{const [a,b]=rangePreset.value.split(',').map(Number);low=currentChannel.percentiles[a];high=currentChannel.percentiles[b];}if(scaleMode.value==='log10'&&low<=0)low=currentChannel.positive_min??1e-30;setNumericValue('low',rangeLow,low);setNumericValue('high',rangeHigh,high);updateChannelMeta();}
-function render(){resize();updateMeasurements();if(renderMode.value==='mesh'){requestNativeFrame();zoomReadout.textContent=`screen half extent ${(camera.scale*DATA.scene.display_radius_cm).toExponential(3)} cm`;if(!batchCapture)requestAnimationFrame(render);return;}meshImage.style.display='none';const [low,high]=safeRange();gl.clearColor(0.015,0.022,0.03,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.uniform3fv(locations.target,camera.target);gl.uniform3fv(locations.right,camera.right);gl.uniform3fv(locations.up,camera.up);gl.uniform3fv(locations.forward,camera.forward);gl.uniform1f(locations.scale,camera.scale);gl.uniform1f(locations.aspect,canvas.width/canvas.height);gl.uniform1f(locations.depth,4.0);gl.uniform1f(locations.point,+pointSize.value*(devicePixelRatio||1));gl.uniform1f(locations.domain_low,transformValue(low));gl.uniform1f(locations.domain_high,transformValue(high));gl.uniform1f(locations.scale_mode,scaleIds[scaleMode.value]);gl.uniform1f(locations.linthresh,Math.max(rangeState.linthresh,1e-30));gl.uniform1f(locations.opacity,+opacity.value);gl.uniform1f(locations.palette,paletteIds[palette.value]);gl.uniform1f(locations.gamma,+gamma.value);gl.uniform1f(locations.invert,invert.checked?1:0);gl.uniform1f(locations.saturation,+saturation.value);gl.uniform1f(locations.brightness,+brightness.value);gl.drawArrays(gl.POINTS,0,DATA.point_count);zoomReadout.textContent=`screen half extent ${(camera.scale*DATA.scene.display_radius_cm).toExponential(3)} cm (${camera.scale.toExponential(3)} scene radii)`;if(!batchCapture)requestAnimationFrame(render);}
+function render(){resize();updateMeasurements();if(nativeMode()){requestNativeFrame();zoomReadout.textContent=`screen half extent ${(camera.scale*DATA.scene.display_radius_cm).toExponential(3)} cm`;if(!batchCapture)requestAnimationFrame(render);return;}meshImage.style.display='none';const [low,high]=safeRange();gl.clearColor(0.015,0.022,0.03,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.uniform3fv(locations.target,camera.target);gl.uniform3fv(locations.right,camera.right);gl.uniform3fv(locations.up,camera.up);gl.uniform3fv(locations.forward,camera.forward);gl.uniform1f(locations.scale,camera.scale);gl.uniform1f(locations.aspect,canvas.width/canvas.height);gl.uniform1f(locations.depth,4.0);gl.uniform1f(locations.point,+pointSize.value*(devicePixelRatio||1));gl.uniform1f(locations.domain_low,transformValue(low));gl.uniform1f(locations.domain_high,transformValue(high));gl.uniform1f(locations.scale_mode,scaleIds[scaleMode.value]);gl.uniform1f(locations.linthresh,Math.max(rangeState.linthresh,1e-30));gl.uniform1f(locations.opacity,+opacity.value);gl.uniform1f(locations.palette,paletteIds[palette.value]);gl.uniform1f(locations.gamma,+gamma.value);gl.uniform1f(locations.invert,invert.checked?1:0);gl.uniform1f(locations.saturation,+saturation.value);gl.uniform1f(locations.brightness,+brightness.value);gl.drawArrays(gl.POINTS,0,DATA.point_count);zoomReadout.textContent=`screen half extent ${(camera.scale*DATA.scene.display_radius_cm).toExponential(3)} cm (${camera.scale.toExponential(3)} scene radii)`;if(!batchCapture)requestAnimationFrame(render);}
 const SAFE_FUNCTION_ARITY={abs:1,sqrt:1,log10:1,ln:1,exp:1,min:2,max:2,pow:2,clip:3};
 function tokenizeDerivedExpression(source){
   const tokens=[];let index=0;
@@ -987,7 +997,7 @@ function setCaptureMode(enabled){
 }
 async function prepareCapture(entry,name,settings={},visibleSceneBinding=null){
   if(!DATA.channels[name])throw new Error(`Unknown physical channel ${name}.`);
-  renderMode.value=settings.renderer==='mesh'&&meshLive?'mesh':'points';
+  renderMode.value=settings.renderer==='volume'&&volumeLive?'volume':settings.renderer==='mesh'&&meshLive?'mesh':'points';nativeInteractiveUntil=0;syncNativeControls();
   if(settings.mesh_view)applyMeshViewState(settings.mesh_view);
   setCaptureMode(true);setPhysicalPose(entry,visibleSceneBinding);channel.value=name;loadChannel(name);
   palette.value=settings.palette||'copper_blue';scaleMode.value=settings.scale_mode||currentChannel.default_scale;
@@ -1000,7 +1010,7 @@ async function prepareCapture(entry,name,settings={},visibleSceneBinding=null){
   if(Number.isFinite(Number(settings.saturation)))saturation.value=String(settings.saturation);
   if(Number.isFinite(Number(settings.brightness)))brightness.value=String(settings.brightness);
   invert.checked=Boolean(settings.invert);symlogControl.style.display=scaleMode.value==='symlog'?'block':'none';updateColorBar();updateChannelMeta();
-  resize();render();if(renderMode.value==='mesh')await awaitNativeFrame();else gl.finish();updateMeasurements();await new Promise(resolve=>requestAnimationFrame(resolve));
+  resize();render();if(nativeMode())await awaitNativeFrame();else gl.finish();updateMeasurements();await new Promise(resolve=>requestAnimationFrame(resolve));
   return {schema:'arepo_camera_lab_capture_state_v001',camera_snapshot:Number(entry.snapshot),snapshot:Number(DATA.scene.snapshot),scene_sha256:DATA.scene.sha256,visible_scene_binding:visibleSceneBinding,pose_id:entry.pose_id??null,channel:name,palette:palette.value,scale_mode:scaleMode.value,low:rangeState.low,high:rangeState.high,linthresh:rangeState.linthresh,point_size:Number(pointSize.value),opacity:Number(opacity.value),gamma:Number(gamma.value),saturation:Number(saturation.value),brightness:Number(brightness.value),invert:invert.checked,point_count:DATA.point_count,renderer:renderMode.value,mesh_report:meshLastReport,measurements:window.cameraLabMeasurements(),camera_pose:pose(),canvas:{width:canvas.width,height:canvas.height}};
 }
 window.AREPO_CAMERA_LAB_CAPTURE={schema:'arepo_camera_lab_capture_api_v001',channels:[...BASE_CHANNEL_NAMES],scene:{...DATA.scene},prepare:prepareCapture,setCaptureMode};

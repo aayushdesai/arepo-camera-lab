@@ -32,7 +32,7 @@ Repository = "https://github.com/aayushdesai/arepo-camera-lab"
 where = ["src"]
 
 [tool.setuptools.package-data]
-arepo_camera_lab = ["*.js", "*.cpp"]
+arepo_camera_lab = ["*.js", "*.cpp", "*.mm", "*.metal"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

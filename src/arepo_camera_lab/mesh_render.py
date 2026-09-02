@@ -1,8 +1,9 @@
-"""Render native AREPO-VTK face planes with VTK on the local graphics device.
+"""Render native AREPO-VTK cells on the local graphics device.
 
 The v052 mesh connectivity is retained for every cell. Display geometry is the
 boundary of the cells passing the user's field range, or all their faces when
-interior faces are enabled. This is a surface preview, not optical integration.
+interior faces are enabled. Metal volume mode integrates inside these cells.
+Both are display previews, not calibrated radiation-transport calculations.
 """
 from __future__ import annotations
 
@@ -163,8 +164,7 @@ def transform(values, style: dict):
 
 class NativeMeshRenderer:
     def __init__(self, config: dict, directory: Path, progress=lambda message: None):
-        import pyvista as pv
-        self.pv, self.directory, self.progress = pv, directory, progress
+        self.directory, self.progress = directory, progress
         self.scene = Path(config["scene_path"])
         self.header = viewer.read_header(self.scene)
         if not self.header["num_edges"] or self.header["invalid_neighbor_edges"]:
@@ -191,13 +191,9 @@ class NativeMeshRenderer:
         self.channel_meta = {name: {k: v for k, v in item.items() if k != "values"}
                              for name, item in payload["channels"].items()}
         del payload, sidecar
-        progress("Compiling the native cell-face adapter")
-        self.binary = compile_builder(directory)
-        self.plotter = pv.Plotter(off_screen=True, window_size=(960, 600))
-        self.plotter.set_background("#070b0f")
-        self.plotter.ren_win.SetMultiSamples(0)
-        self.plotter.enable_parallel_projection()
-        self.plotter.enable_depth_peeling(number_of_peels=12, occlusion_ratio=0.0)
+        self.binary = self.plotter = self.volume = None
+        self.active_representation = None
+        self.face_capabilities = None
         self.mesh = None
         self.mask_key = None
         self.geometry_stats = {}
@@ -205,6 +201,19 @@ class NativeMeshRenderer:
         self.camera = None
         self.actor = None
         self.actor_key = None
+
+    def _prepare_faces(self):
+        if self.plotter is not None:
+            return
+        import pyvista as pv
+        self.pv = pv
+        self.progress("Preparing the native VTK cell-face view")
+        self.binary = compile_builder(self.directory)
+        self.plotter = pv.Plotter(off_screen=True, window_size=(960, 600))
+        self.plotter.set_background("#070b0f")
+        self.plotter.ren_win.SetMultiSamples(0)
+        self.plotter.enable_parallel_projection()
+        self.plotter.enable_depth_peeling(number_of_peels=12, occlusion_ratio=0.0)
 
     def values(self, name: str, definitions: list[dict]):
         formulas = {item["name"]: item["expression"] for item in definitions}
@@ -243,12 +252,25 @@ class NativeMeshRenderer:
         # Keep the eye beyond the full scene at every zoom, avoiding near clipping
         # when the orthographic camera moves inside the white dwarf.
         distance = max(8.0, scale * 4.0)
-        self.plotter.camera_position = [target - distance * forward, target, up]
-        self.plotter.camera.parallel_scale = scale
-        self.plotter.camera.clipping_range = (0.001, distance + 30.0)
+        if self.plotter is not None:
+            self.plotter.camera_position = [target - distance * forward, target, up]
+            self.plotter.camera.parallel_scale = scale
+            self.plotter.camera.clipping_range = (0.001, distance + 30.0)
         self.camera = {"target": target.tolist(), "forward": forward.tolist(), "up": up.tolist(), "scale": scale}
 
     def render(self, params: dict) -> tuple[bytes, dict]:
+        representation = params.get("representation", "faces")
+        if representation == "volume":
+            from .volume_render import MetalVolume
+            if self.volume is None:
+                self.volume = MetalVolume(self)
+            png, report = self.volume.render(params)
+            self.active_representation = "volume"
+            self.capabilities = self.volume.capabilities
+            return png, report
+        if representation != "faces":
+            raise ValueError("Unknown native representation: " + str(representation))
+        self._prepare_faces()
         from vtkmodules.util.numpy_support import numpy_to_vtk, numpy_to_vtkIdTypeArray
         from vtkmodules.vtkCommonDataModel import vtkCellArray
         started = time.monotonic()
@@ -326,8 +348,10 @@ class NativeMeshRenderer:
         # requests must explicitly draw before reading back the framebuffer.
         self.plotter.render()
         picture = self.plotter.screenshot(return_img=True)
-        if self.capabilities is None:
-            self.capabilities = self.plotter.ren_win.ReportCapabilities()
+        if self.face_capabilities is None:
+            self.face_capabilities = self.plotter.ren_win.ReportCapabilities()
+        self.capabilities = self.face_capabilities
+        self.active_representation = "faces"
         from PIL import Image
         image = Image.fromarray(picture)
         output = io.BytesIO()
@@ -338,11 +362,14 @@ class NativeMeshRenderer:
                   "render_seconds": time.monotonic() - started, "width": width, "height": height,
                   "depth_peeling": bool(self.plotter.renderer.GetLastRenderingUsedDepthPeeling()),
                   "backend": "native_vtk_voronoi_faces_v001", "interior_faces": interior,
+                  "representation": "faces", "ruler_kind": "3d",
                   "density_floor": density_floor,
                   "camera": self.camera, "style": style}
         return output.getvalue(), report
 
     def pick(self, params: dict) -> dict:
+        if self.active_representation == "volume":
+            raise ValueError("Volume rulers measure projected distance; use the face view for 3D surface picks")
         from vtkmodules.vtkRenderingCore import vtkCellPicker
         self.set_camera(params["camera"])
         if self.mesh is None:
@@ -363,4 +390,7 @@ class NativeMeshRenderer:
                 "snapshot": self.meta["snapshot"], "scene_sha256": self.meta["sha256"]}
 
     def close(self):
-        self.plotter.close()
+        if self.volume is not None:
+            self.volume.close()
+        if self.plotter is not None:
+            self.plotter.close()
