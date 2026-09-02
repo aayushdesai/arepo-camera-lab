@@ -43,8 +43,9 @@ arepo-camera-lab serve \
 ```
 
 The snapshot control is a dropdown, not a free-running number. Selecting a row
-rsyncs and verifies that exact scene/sidecar pair before the visible-data label
-changes. A catalog has a global `required_auxiliary_fields` contract, so an
+reuses its verified local scene/sidecar pair, or downloads and verifies that
+pair once if it is missing, before the visible-data label changes.
+A catalog has a global `required_auxiliary_fields` contract, so an
 epoch missing magnetic field, pressure, or sound speed cannot silently appear
 with fewer controls. See `examples/catalog.example.json`.
 
@@ -74,16 +75,20 @@ weighting. The field colour, camera, and original pose remain independent.
 **Hide cells below density** starts at 100 g cm^-3; the outflow preset lowers it
 to 0.01 g cm^-3. Advanced controls expose reference density, physical path
 length, and density weighting. These are display settings, not calibrated
-radiation transport. **Field reconstruction** selects **Smooth field** or
-**Original cell values**. Smooth field interpolates between nearby native cells;
-it does not add simulation resolution and can soften shocks. Original cell
-values retain the discontinuous field for debugging. The gas-density channel
+radiation transport. **Field reconstruction** initially selects **Linear field**,
+which varies the displayed field within each native cell using bounded gradients
+from its actual neighbours. **Original cell values** retains the exported values
+for debugging. **Legacy smoothing** preserves the earlier, slower Shepard mode
+for existing presets and comparisons. These display reconstructions do not add
+simulation resolution or establish whether a feature is physically resolved.
+The gas-density channel
 is the simulation mass density in g cm^-3, not a density proxy.
 
 High quality integrates four deterministic subpixel rays with two samples per
 cell; a smaller frame with one of each renders during orbit/zoom and refines
-after interaction stops. Smooth reconstruction costs more GPU time than original
-cell values. Existing saved volume presets retain their original reconstruction.
+after interaction stops. Linear gradients are prepared once per field/transfer
+change on the M4 and reused for camera changes. Existing saved volume presets
+retain their original reconstruction.
 
 **Fit visible mesh** frames the visible cells without editing an imported
 camera alternative. Orbit, pan, deep zoom, all physical/derived channels,

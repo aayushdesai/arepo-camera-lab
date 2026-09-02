@@ -5,6 +5,71 @@ using namespace metal;
 struct Edge { packed_float3 delta; uint neighbor; };
 struct KDNode { float split; uint axis, left, right, first, last, pad0, pad1; };
 struct Uniforms { uint4 shape; float4 target, forward, right, up; uint4 scene; };
+struct Gradient {float4 scalar, extinction, bounds;};
+struct Fit {float3 a,b,c,rhs;uint count;};
+
+void addFit(thread Fit& fit,float3 d,float difference) {
+  float d2=dot(d,d);
+  if(!(d2>1e-30f)||!isfinite(difference))return;
+  float w=1/d2;
+  fit.a+=d.x*d*w;fit.b+=d.y*d*w;fit.c+=d.z*d*w;
+  fit.rhs+=d*difference*w;fit.count++;
+}
+
+bool solveFit(thread const Fit& fit,thread float3& gradient) {
+  float3 bc=cross(fit.b,fit.c),ca=cross(fit.c,fit.a),ab=cross(fit.a,fit.b);
+  float determinant=dot(fit.a,bc),scale=(fit.a.x+fit.b.y+fit.c.z)/3;
+  if(fit.count<3 || determinant<=1e-6f*scale*scale*scale) {gradient=0;return false;}
+  gradient=float3(dot(bc,fit.rhs),dot(ca,fit.rhs),dot(ab,fit.rhs))/determinant;
+  if(!all(isfinite(gradient))){gradient=0;return false;}
+  return true;
+}
+
+kernel void prepareGradients(device const uint* offsets [[buffer(0)]],
+                             device const Edge* edges [[buffer(1)]],
+                             device const float2* fields [[buffer(2)]],
+                             device Gradient* gradients [[buffer(3)]],
+                             device atomic_uint* failures [[buffer(4)]],
+                             constant uint& count [[buffer(5)]],
+                             constant float& edgeScale [[buffer(6)]],
+                             uint cell [[thread_position_in_grid]]) {
+  if(cell>=count)return;
+  float2 value=fields[cell],low=value,high=value;
+  Fit scalar{},extinction{};
+  for(uint e=offsets[cell];e<offsets[cell+1];e++) {
+    uint other=(edges[e].neighbor&0x7fffffff)-1;
+    if(other>=count)continue; // Traversal rejects this malformed graph explicitly.
+    float3 d=float3(edges[e].delta)*edgeScale;
+    float2 next=fields[other];
+    addFit(scalar,d,next.x-value.x);addFit(extinction,d,next.y-value.y);
+    if(isfinite(next.x)){low.x=min(low.x,next.x);high.x=max(high.x,next.x);}
+    low.y=min(low.y,next.y);high.y=max(high.y,next.y);
+  }
+  float3 gs=0,gk=0;
+  bool validS=!isfinite(value.x)||solveFit(scalar,gs),validK=solveFit(extinction,gk);
+  if(!validS||!validK)atomic_fetch_add_explicit(failures,1u,memory_order_relaxed);
+  float2 limit=1;
+  for(uint e=offsets[cell];e<offsets[cell+1];e++) {
+    float3 d=float3(edges[e].delta)*edgeScale;
+    float2 delta=float2(dot(gs,d),dot(gk,d));
+    for(uint k=0;k<2;k++) {
+      float ratio=delta[k]>0?(high[k]-value[k])/delta[k]:delta[k]<0?(low[k]-value[k])/delta[k]:1;
+      limit[k]=min(limit[k],clamp(ratio,0.0f,1.0f));
+    }
+  }
+  gradients[cell]={float4(gs*limit.x,validS?1:0),float4(gk*limit.y,validK?1:0),
+                   float4(low.x,high.x,low.y,high.y)};
+}
+
+float2 linearFields(float3 relative,uint cell,device const float2* fields,
+                    device const Gradient* gradients) {
+  if(!isfinite(fields[cell].x))return float2(NAN,0);
+  Gradient g=gradients[cell];
+  float2 value=fields[cell]+float2(dot(g.scalar.xyz,relative),dot(g.extinction.xyz,relative));
+  value.x=clamp(value.x,g.bounds.x,g.bounds.y);
+  value.y=clamp(value.y,g.bounds.z,g.bounds.w);
+  return value;
+}
 
 struct NearestNine { float distance[9]; uint cell[9]; };
 
@@ -110,11 +175,14 @@ kernel void sampleFields(device const float4* positions [[buffer(0)]],
                           device float2* output [[buffer(7)]],
                           constant uint4& counts [[buffer(8)]],
                           constant float& box [[buffer(9)]],
+                          device const Gradient* gradients [[buffer(10)]],
                           uint index [[thread_position_in_grid]]) {
   if(index>=counts.x)return;
   float3 point=points[index].xyz;
   uint seed=periodicNearest(point,box,positions,nodes,order,counts.z);
-  output[index]=continuousFields(point,box,positions,offsets,edges,fields,seed,counts.y);
+  float3 relative=point-positions[seed].xyz;relative-=round(relative/box)*box;
+  output[index]=counts.w==2?linearFields(relative,seed,fields,gradients):
+    counts.w==1?continuousFields(point,box,positions,offsets,edges,fields,seed,counts.y):fields[seed];
 }
 
 // Compensated accumulation prevents many short steps losing their distance
@@ -136,6 +204,7 @@ kernel void nativeVolume(device const float4* positions [[buffer(0)]],
                          device float4* pixels [[buffer(7)]],
                          device uint4* statistics [[buffer(8)]],
                          constant Uniforms& u [[buffer(9)]],
+                         device const Gradient* gradients [[buffer(10)]],
                          uint index [[thread_position_in_grid]]) {
   uint width=u.shape.x,height=u.shape.y,spp=u.shape.z;
   if(index>=width*height*spp)return;
@@ -188,7 +257,8 @@ kernel void nativeVolume(device const float4* positions [[buffer(0)]],
       for(uint sample=0;sample<samples;sample++) {
         float fraction=samples==2?(sample==0?0.2113248654f:0.7886751346f):0.5f;
         float3 point=fma(distance.x,direction,origin)+(distance.y+length*fraction)*direction;
-        float2 field=u.scene.z?continuousFields(point,box,positions,offsets,edges,fields,cell,u.scene.x):fields[cell];
+        float2 field=u.scene.z==2?linearFields(relative+length*fraction*direction,cell,fields,gradients):
+          u.scene.z==1?continuousFields(point,box,positions,offsets,edges,fields,cell,u.scene.x):fields[cell];
         if(!isfinite(field.y)||field.y<0){status=64;break;}
         if(field.y>0 && isfinite(field.x)) {
           float tau=min(80.0f,field.y*length/samples);

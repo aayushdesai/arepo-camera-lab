@@ -104,7 +104,8 @@ class NativeMetalTest(unittest.TestCase):
         palette = np.tile([*color, 1], (512, 1)).astype(np.float32)
         self.volume.upload_transfer(fields, palette)
         background = np.array([.00212469, .00334654, .00477695])
-        for mode, samples in (("piecewise_constant", 1), ("continuous", 1), ("continuous", 2)):
+        for mode, samples in (("piecewise_constant", 1), ("continuous", 1), ("continuous", 2),
+                               ("linear", 1), ("linear", 2)):
             for direction, chord in (((0, 0, 1), 3), ((1, 0, 1), 3*math.sqrt(2)), ((0, 0, -1), 3)):
                 image, report = self.volume.trace(self.camera(direction), 1, 1, 1, mode, samples)
                 transmission = math.exp(-.25*chord)
@@ -113,6 +114,72 @@ class NativeMetalTest(unittest.TestCase):
         zoomed, _ = self.volume.trace(self.camera(scale=.01), 1, 1, 1)
         np.testing.assert_allclose(zoomed, image, atol=2e-6)
         self.assertIsNone(self.owner.plotter)  # Volume preview needs no OpenGL window.
+
+    def test_limited_linear_reproduces_an_affine_field_and_bounds_native_extrema(self):
+        positions = self.volume.positions[:, :3]
+        slope = np.array([[.12, -.06, .07], [.05, .02, -.01]], np.float32)
+        offset = np.array([.5, .3], np.float32)
+        fields = offset + positions @ slope.T
+        self.volume.upload_transfer(fields, np.ones((512, 4), np.float32))
+        rng = np.random.default_rng(683)
+        points = rng.uniform(-.45, .45, (512, 3)).astype(np.float32)
+        expected = offset + points @ slope.T
+        result = self.volume.sample_fields(points, "linear")
+        np.testing.assert_allclose(result, expected, atol=5e-7, rtol=1e-6)
+        # The old interpolator introduces plateaus even on a smooth ramp.
+        self.assertGreater(float(np.max(np.abs(self.volume.sample_fields(points)-expected))), .01)
+        np.testing.assert_array_equal(self.volume.sample_fields(positions, "linear"), fields)
+        self.assertEqual(self.volume.gradient_fallbacks, 0)
+        fields = rng.uniform(.01, 1, (27, 2)).astype(np.float32)
+        self.volume.upload_transfer(fields, np.ones((512, 4), np.float32))
+        points = rng.uniform(-4.5, 4.5, (1024, 3)).astype(np.float32)
+        values = self.volume.sample_fields(points, "linear")
+        relative = positions[None, :, :]-points[:, None, :]
+        relative -= np.round(relative/3)*3
+        nearest = np.argmin(np.sum(relative*relative, axis=2), axis=1)
+        xyz = np.array(list(itertools.product(range(3), repeat=3)))
+        lookup = {tuple(p): i for i, p in enumerate(xyz)}
+        for row, parent in zip(values, nearest):
+            neighbors = [parent]
+            for axis in range(3):
+                for sign in (-1, 1):
+                    p = xyz[parent].copy(); p[axis] = (p[axis]+sign)%3
+                    neighbors.append(lookup[tuple(p)])
+            self.assertTrue(np.all(row >= fields[neighbors].min(axis=0)-1e-6))
+            self.assertTrue(np.all(row <= fields[neighbors].max(axis=0)+1e-6))
+
+    def test_linear_gradients_use_unequal_native_spacing(self):
+        owner = mesh_render.NativeMeshRenderer(lattice(self.root/"uneven-linear.bin", sites=(.05, .07, 2.7)), self.root)
+        volume = volume_render.MetalVolume(owner)
+        try:
+            positions = volume.positions[:, :3]
+            slope = np.array([[.03, -.02, .04], [.01, .03, -.02]], np.float32)
+            offset = np.array([.5, .3], np.float32)
+            fields = offset + positions @ slope.T
+            volume.upload_transfer(fields, np.ones((512, 4), np.float32))
+            points = positions[13] + np.random.default_rng(599).uniform(.001, .3, (256, 3)).astype(np.float32)
+            np.testing.assert_allclose(volume.sample_fields(points, "linear"), offset + points @ slope.T,
+                                       atol=2e-6, rtol=2e-6)
+            self.assertEqual(volume.gradient_fallbacks, 0)
+        finally:
+            volume.close(); owner.close()
+
+    def test_linear_hides_nonfinite_fields_and_reports_unsupported_gradients(self):
+        fields = np.zeros((27, 2), np.float32)
+        fields[:, 0] = np.nan
+        fields[13] = [.75, .5]
+        self.volume.upload_transfer(fields, np.ones((512, 4), np.float32))
+        self.assertGreater(self.volume.gradient_fallbacks, 0)
+        values = self.volume.sample_fields(np.array([[.1, .05, -.05], [1., 0, 0]], np.float32), "linear")
+        self.assertAlmostEqual(float(values[0, 0]), .75, places=6)
+        self.assertGreater(float(values[0, 1]), 0)
+        self.assertTrue(np.isnan(values[1, 0]))
+        self.assertEqual(values[1, 1], 0)
+        image, report = self.volume.trace(self.camera(), 3, 3, 4, "linear", 2)
+        self.assertTrue(np.all(np.isfinite(image)))
+        self.assertGreater(report["gradient_fallback_cells"], 0)
+        with self.assertRaisesRegex(ValueError, "reconstruction"):
+            self.volume.sample_fields(np.zeros((1, 3)), "invented")
 
     def test_continuous_field_matches_independent_periodic_neighbour_search(self):
         rng = np.random.default_rng(173)
@@ -213,7 +280,7 @@ class NativeMetalTest(unittest.TestCase):
             self.assertEqual(report["snapshot_time_seconds"], 155.0146484375)
             self.assertEqual(report["scene_sha256"], self.owner.meta["sha256"])
             self.assertEqual(report["ruler_kind"], "projected")
-            self.assertEqual(report["reconstruction"], "continuous")
+            self.assertEqual(report["reconstruction"], "linear")
             params["camera"] = self.camera((1, 0, 1))
             second, _ = self.owner.render(params)
             self.assertNotEqual(first, second)
@@ -263,7 +330,7 @@ class NativeMetalTest(unittest.TestCase):
                   "low": .5, "high": 1.5, "palette": "copper_blue", "opacity": .5}}
         try:
             result = state.mesh_request(params)
-            self.assertEqual(result["report"]["backend"], "native_metal_voronoi_volume_v002")
+            self.assertEqual(result["report"]["backend"], "native_metal_voronoi_volume_v003")
             self.assertEqual(result["report"]["traversal_failures"], 0)
             process = state.mesh_bridge.process
             with mock.patch.object(server.session_cleanup, "archive_and_cleanup") as archive:

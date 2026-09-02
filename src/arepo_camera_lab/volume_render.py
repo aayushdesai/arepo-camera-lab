@@ -37,9 +37,9 @@ def volume_options(params: dict) -> dict:
         raise ValueError("Volume reference density and path length must be positive")
     if not 0 <= result["density_power"] <= 2 or not 0 <= result["floor_softening_dex"] <= 4:
         raise ValueError("Volume density power must be in [0,2] and floor softening in [0,4] dex")
-    result["reconstruction"] = params.get("volume", {}).get("reconstruction", "continuous")
-    if result["reconstruction"] not in ("continuous", "piecewise_constant"):
-        raise ValueError("Volume reconstruction must be continuous or piecewise_constant")
+    result["reconstruction"] = params.get("volume", {}).get("reconstruction", "linear")
+    if result["reconstruction"] not in ("continuous", "piecewise_constant", "linear"):
+        raise ValueError("Volume reconstruction must be continuous, linear, or piecewise_constant")
     return result
 
 
@@ -95,12 +95,16 @@ class MetalVolume:
         self.library.av_create.restype = pointer
         self.library.av_device.argtypes = [pointer]
         self.library.av_device.restype = C.c_char_p
-        self.library.av_fields.argtypes = [pointer, pointer, pointer, C.c_char_p, C.c_size_t]
+        self.library.av_fields.argtypes = [pointer, pointer, pointer, C.c_float, C.c_char_p, C.c_size_t]
+        self.library.av_gradient_seconds.argtypes = [pointer]
+        self.library.av_gradient_seconds.restype = C.c_double
+        self.library.av_gradient_fallbacks.argtypes = [pointer]
+        self.library.av_gradient_fallbacks.restype = C.c_uint32
         self.library.av_render.argtypes = [pointer, C.c_uint32, C.c_uint32, C.c_uint32,
                                            C.c_uint32, C.c_uint32, C.c_uint32,
                                            pointer, pointer, pointer, pointer,
                                            C.c_char_p, C.c_size_t]
-        self.library.av_sample_fields.argtypes = [pointer, pointer, C.c_uint32, C.c_float,
+        self.library.av_sample_fields.argtypes = [pointer, pointer, C.c_uint32, C.c_float, C.c_uint32,
                                                   pointer, C.c_char_p, C.c_size_t]
         self.library.av_close.argtypes = [pointer]
         self.error = C.create_string_buffer(4096)
@@ -131,9 +135,9 @@ class MetalVolume:
         self.capabilities = (f"Native Metal compute\nDevice: {self.device}\n"
                              f"macOS: {platform.mac_ver()[0]}\nArchitecture: {platform.machine()}\n"
                              "Geometry: full native v052 neighbour planes\n"
-                             "Reconstruction: continuous compact Shepard or original cell values\n"
+                             "Reconstruction: limited linear field, original cells, or legacy compact Shepard\n"
                              "Compositing: physical segment lengths, linear-light display transfer\n"
-                             "Fallback: none\n")
+                             "Renderer fallback: none\nGradient fallback: zero slope (reported)\n")
 
     def upload_transfer(self, fields: np.ndarray, palette: np.ndarray):
         fields = np.ascontiguousarray(fields, dtype=np.float32)
@@ -143,11 +147,16 @@ class MetalVolume:
         if not np.all(np.isfinite(fields[:, 1])) or np.any(fields[:, 1] < 0):
             raise ValueError("Native volume extinction must be finite and nonnegative")
         if self.library.av_fields(self.handle, fields.ctypes.data, palette.ctypes.data,
+                                  self.owner.header["position_unit_cm"]/self.owner.meta["display_radius_cm"],
                                   self.error, len(self.error)):
             raise ValueError(self.error.value.decode())
+        self.gradient_seconds = self.library.av_gradient_seconds(self.handle)
+        self.gradient_fallbacks = self.library.av_gradient_fallbacks(self.handle)
 
-    def sample_fields(self, points: np.ndarray) -> np.ndarray:
+    def sample_fields(self, points: np.ndarray, reconstruction="continuous") -> np.ndarray:
         """Sample the GPU display reconstruction in normalized scene coordinates."""
+        if reconstruction not in ("continuous", "piecewise_constant", "linear"):
+            raise ValueError("Invalid volume reconstruction")
         points = np.asarray(points, dtype=np.float32)
         if points.ndim != 2 or points.shape[1] != 3 or not 0 < len(points) <= 1000000:
             raise ValueError("Expected between 1 and 1000000 three-dimensional sample points")
@@ -157,7 +166,8 @@ class MetalVolume:
         queries[:, :3] = points
         result = np.empty((len(points), 2), np.float32)
         if self.library.av_sample_fields(self.handle, queries.ctypes.data, len(points),
-                     self.box_cm/self.owner.meta["display_radius_cm"], result.ctypes.data,
+                     self.box_cm/self.owner.meta["display_radius_cm"],
+                     {"piecewise_constant": 0, "continuous": 1, "linear": 2}[reconstruction], result.ctypes.data,
                      self.error, len(self.error)):
             raise ValueError(self.error.value.decode())
         if not np.all(np.isfinite(result[:, 1])) or np.any(result[:, 1] < 0):
@@ -168,7 +178,7 @@ class MetalVolume:
               reconstruction: str = "piecewise_constant", cell_samples: int = 1):
         if width <= 0 or height <= 0 or width > 1920 or height > 1200 or subpixels not in (1, 4):
             raise ValueError("Volume viewport must be at most 1920 by 1200 with 1 or 4 rays per pixel")
-        if reconstruction not in ("continuous", "piecewise_constant") or cell_samples not in (1, 2):
+        if reconstruction not in ("continuous", "piecewise_constant", "linear") or cell_samples not in (1, 2):
             raise ValueError("Invalid volume reconstruction or cell sampling")
         forward, up = np.asarray(camera["forward"]), np.asarray(camera["up"])
         right = np.cross(forward, up)
@@ -182,7 +192,7 @@ class MetalVolume:
         stats = np.empty((height, width, subpixels, 4), dtype=np.uint32)
         gpu_seconds = C.c_double()
         if self.library.av_render(self.handle, width, height, subpixels, 8192,
-                                  int(reconstruction == "continuous"), cell_samples, uniform.ctypes.data,
+                                  {"piecewise_constant": 0, "continuous": 1, "linear": 2}[reconstruction], cell_samples, uniform.ctypes.data,
                                   pixels.ctypes.data, stats.ctypes.data, C.byref(gpu_seconds),
                                   self.error, len(self.error)):
             raise ValueError(self.error.value.decode())
@@ -198,8 +208,10 @@ class MetalVolume:
                   "mean_cells_per_ray": float(stats[..., 1].mean()),
                   "zero_length_transitions": int(stats[..., 2].sum()),
                   "subpixel_samples": subpixels, "reconstruction": reconstruction,
-                  "cell_samples": cell_samples if reconstruction == "continuous" else 1,
-                  "interpolation": "compact_shepard_8" if reconstruction == "continuous" else "none"}
+                  "cell_samples": cell_samples if reconstruction != "piecewise_constant" else 1,
+                  "interpolation": {"continuous": "compact_shepard_8", "linear": "limited_least_squares", "piecewise_constant": "none"}[reconstruction],
+                  "gradient_setup_gpu_seconds": self.gradient_seconds,
+                  "gradient_fallback_cells": self.gradient_fallbacks}
         return pixels.mean(axis=2), report
 
     def render(self, params: dict):
@@ -262,7 +274,7 @@ class MetalVolume:
                   "scene_sha256": owner.meta["sha256"], "native_cell_count": int(owner.header["num_cells"]),
                   "selected_cells": int(len(self.visible_indices)), "width": width, "height": height,
                   "render_seconds": time.monotonic()-started, "setup_seconds": self.setup_seconds,
-                  "backend": "native_metal_voronoi_volume_v002", "device": self.device,
+                  "backend": "native_metal_voronoi_volume_v003", "device": self.device,
                   "representation": "volume", "density_floor": floor, "volume": options,
                   "reconstruction_fields": ["transformed_colour_scalar", "display_extinction"],
                   "ruler_kind": "projected",

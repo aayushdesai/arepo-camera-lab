@@ -20,7 +20,7 @@ element('volumeDensityReference').value = '10000';
 element('volumeOpacityLength').value = '10000';
 element('volumeDensityPower').value = '0.5';
 element('volumeQuality').value = '4';
-element('volumeReconstruction').value = 'continuous';
+element('volumeReconstruction').value = 'linear';
 element('volumeFloorSoftening').value = '1';
 element('showAnnotations').checked = element('meshLighting').checked = true;
 element('measureUnit').value = 'auto';
@@ -62,7 +62,7 @@ vm.runInContext(fs.readFileSync(path.join(directory, 'mesh_viewer.js'), 'utf8'),
     assert.equal(meshParameters().representation,'volume');
     assert.equal(meshParameters().subpixel_samples,4);
     assert.equal(meshParameters().cell_samples,2);
-    assert.equal(meshParameters().volume.reconstruction,'continuous');
+    assert.equal(meshParameters().volume.reconstruction,'linear');
     assert.equal(meshParameters().volume.opacity_length_cm,1e9);
     assert.equal(meshEdges.disabled,true);
     renderMode.value='mesh';renderMode.onchange();
@@ -111,7 +111,7 @@ vm.runInContext(fs.readFileSync(path.join(directory, 'mesh_viewer.js'), 'utf8'),
     assert.equal(volumeDensityReference.value,'10000');
     assert.equal(volumeProfile.value,'outflow');
     assert.equal(volumeFloorSoftening.value,'0.3');
-    assert.equal(volumeReconstruction.value,'continuous');
+    assert.equal(volumeReconstruction.value,'linear');
     delete volumeSaved.volume.reconstruction;applyMeshViewState(volumeSaved);
     assert.equal(volumeReconstruction.value,'piecewise_constant');
     holdResponse=true;

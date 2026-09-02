@@ -19,9 +19,11 @@ static_assert(sizeof(KDNode) == 32 && sizeof(Uniforms) == 96, "Metal buffer layo
 struct Volume {
   id<MTLDevice> device;
   id<MTLCommandQueue> queue;
-  id<MTLComputePipelineState> pipeline, samplePipeline;
-  id<MTLBuffer> positions, offsets, edges, nodes, order, fields, palette;
+  id<MTLComputePipelineState> pipeline, samplePipeline, gradientPipeline;
+  id<MTLBuffer> positions, offsets, edges, nodes, order, fields, palette, gradients;
   uint32_t count, root;
+  uint32_t gradientFallbacks;
+  double gradientSeconds;
   std::string deviceName;
 };
 
@@ -89,6 +91,9 @@ extern "C" void* av_create(const char* shaderPath, const float* positions,
       function = [library newFunctionWithName:@"sampleFields"];
       v->samplePipeline = [v->device newComputePipelineStateWithFunction:function error:&problem];
       if(!v->samplePipeline) throw std::runtime_error([[problem localizedDescription] UTF8String]);
+      function = [library newFunctionWithName:@"prepareGradients"];
+      v->gradientPipeline = [v->device newComputePipelineStateWithFunction:function error:&problem];
+      if(!v->gradientPipeline) throw std::runtime_error([[problem localizedDescription] UTF8String]);
       v->count = count;
       v->positions = buffer(v, positions, size_t(count)*16);
       v->offsets = buffer(v, offsets, size_t(count+1)*4);
@@ -112,16 +117,37 @@ extern "C" const char* av_device(void* handle) {
 }
 
 extern "C" int av_fields(void* handle, const float* fields, const float* palette,
-                          char* error, size_t errorSize) {
+                          float edgeScale,char* error, size_t errorSize) {
   @autoreleasepool {
     try {
       auto* v = static_cast<Volume*>(handle);
       v->fields = buffer(v, fields, size_t(v->count)*8);
       v->palette = buffer(v, palette, 512*16);
+      if(!v->gradients)v->gradients=[v->device newBufferWithLength:size_t(v->count)*48 options:MTLResourceStorageModeShared];
+      if(!v->gradients)throw std::runtime_error("Metal gradient allocation failed");
+      uint32_t zero=0;
+      auto failures=buffer(v,&zero,sizeof(zero));
+      id<MTLCommandBuffer> command=[v->queue commandBuffer];
+      id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+      [encoder setComputePipelineState:v->gradientPipeline];
+      NSArray* buffers=@[v->offsets,v->edges,v->fields,v->gradients,failures];
+      for(NSUInteger i=0;i<buffers.count;i++)[encoder setBuffer:buffers[i] offset:0 atIndex:i];
+      [encoder setBytes:&v->count length:sizeof(v->count) atIndex:5];
+      [encoder setBytes:&edgeScale length:sizeof(edgeScale) atIndex:6];
+      NSUInteger group=std::min(NSUInteger(128),v->gradientPipeline.maxTotalThreadsPerThreadgroup);
+      [encoder dispatchThreads:MTLSizeMake(v->count,1,1) threadsPerThreadgroup:MTLSizeMake(group,1,1)];
+      [encoder endEncoding];[command commit];[command waitUntilCompleted];
+      if(command.status!=MTLCommandBufferStatusCompleted)
+        throw std::runtime_error([[command.error localizedDescription] UTF8String]);
+      v->gradientSeconds=command.GPUEndTime-command.GPUStartTime;
+      v->gradientFallbacks=*static_cast<uint32_t*>(failures.contents);
       return 0;
     } catch(const std::exception& ex) {errorMessage(error, errorSize, ex.what());return 1;}
   }
 }
+
+extern "C" double av_gradient_seconds(void* handle) {return static_cast<Volume*>(handle)->gradientSeconds;}
+extern "C" uint32_t av_gradient_fallbacks(void* handle) {return static_cast<Volume*>(handle)->gradientFallbacks;}
 
 extern "C" int av_render(void* handle, uint32_t width, uint32_t height,
                           uint32_t subpixels, uint32_t maxSteps,
@@ -132,7 +158,7 @@ extern "C" int av_render(void* handle, uint32_t width, uint32_t height,
     try {
       auto* v = static_cast<Volume*>(handle);
       if(!v->fields || !v->palette) throw std::runtime_error("Set the native volume transfer before rendering");
-      if(reconstruction>1 || (cellSamples!=1 && cellSamples!=2))
+      if(reconstruction>2 || (cellSamples!=1 && cellSamples!=2))
         throw std::runtime_error("Invalid native volume reconstruction or cell sampling");
       const size_t rays = size_t(width)*height*subpixels;
       if(!rays || rays > 1920ul*1200*4) throw std::runtime_error("Native volume viewport exceeds its pixel budget");
@@ -147,6 +173,7 @@ extern "C" int av_render(void* handle, uint32_t width, uint32_t height,
       NSArray* buffers = @[v->positions,v->offsets,v->edges,v->nodes,v->order,v->fields,v->palette,output,status];
       for(NSUInteger i=0;i<buffers.count;i++) [encoder setBuffer:buffers[i] offset:0 atIndex:i];
       [encoder setBytes:&u length:sizeof(u) atIndex:9];
+      [encoder setBuffer:v->gradients offset:0 atIndex:10];
       NSUInteger group = std::min(NSUInteger(128),v->pipeline.maxTotalThreadsPerThreadgroup);
       [encoder dispatchThreads:MTLSizeMake(rays,1,1) threadsPerThreadgroup:MTLSizeMake(group,1,1)];
       [encoder endEncoding]; [command commit]; [command waitUntilCompleted];
@@ -161,11 +188,11 @@ extern "C" int av_render(void* handle, uint32_t width, uint32_t height,
 }
 
 extern "C" int av_sample_fields(void* handle, const float* points, uint32_t count,
-                                 float box, float* values, char* error, size_t errorSize) {
+                                 float box,uint32_t reconstruction, float* values, char* error, size_t errorSize) {
   @autoreleasepool {
     try {
       auto* v=static_cast<Volume*>(handle);
-      if(!v->fields || !count || count>1000000 || !(box>0))
+      if(!v->fields || !count || count>1000000 || !(box>0) || reconstruction>2)
         throw std::runtime_error("Invalid native field sample request");
       auto queries=buffer(v,points,size_t(count)*16);
       id<MTLBuffer> output=[v->device newBufferWithLength:size_t(count)*8 options:MTLResourceStorageModeShared];
@@ -175,9 +202,10 @@ extern "C" int av_sample_fields(void* handle, const float* points, uint32_t coun
       [encoder setComputePipelineState:v->samplePipeline];
       NSArray* buffers=@[v->positions,v->offsets,v->edges,v->nodes,v->order,v->fields,queries,output];
       for(NSUInteger i=0;i<buffers.count;i++)[encoder setBuffer:buffers[i] offset:0 atIndex:i];
-      uint32_t counts[4]{count,v->count,v->root,0};
+      uint32_t counts[4]{count,v->count,v->root,reconstruction};
       [encoder setBytes:counts length:sizeof(counts) atIndex:8];
       [encoder setBytes:&box length:sizeof(box) atIndex:9];
+      [encoder setBuffer:v->gradients offset:0 atIndex:10];
       NSUInteger group=std::min(NSUInteger(128),v->samplePipeline.maxTotalThreadsPerThreadgroup);
       [encoder dispatchThreads:MTLSizeMake(count,1,1) threadsPerThreadgroup:MTLSizeMake(group,1,1)];
       [encoder endEncoding];[command commit];[command waitUntilCompleted];

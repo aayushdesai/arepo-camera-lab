@@ -69,8 +69,45 @@ The image softens cell boundaries but retains texture. The selectable
 reconstruction, periodic-neighbour checks, and two-sample quadrature are now
 implemented. The 52-test regression passed, followed by all 12 native-volume
 checks after adding a strongly unequal-spacing fixture. That fixture verifies
-spatial interpolation independently of a density-to-cell-size law. Final
-paired image captures are pending.
+spatial interpolation independently of a density-to-cell-size law.
+
+The paired v003 captures finished at 1440 by 960, four rays per pixel and
+two samples per cell for interpolation. Original-cell GPU times were 0.27 s
+(binary), 0.70 s (disk), 0.68 s (remnant), and 0.27 s (outflow). The corresponding
+Shepard times were 12.26, 23.87, 27.76, and 11.79 s. All eight frames reported
+zero traversal failures. The user rejected the grain again. These images are
+retained as failed quality candidates; passing traversal and software checks
+does not make their appearance acceptable.
+
+## Smooth-field regression and limited gradients
+
+A synthetic 27-cell native periodic lattice was assigned known affine colour
+and extinction fields. At 512 points inside its central cell, the Shepard
+interpolator deviated by up to 0.04489 in normalized field units. Its vanishing
+slope near generators creates plateaus even when the input field is smooth.
+The limited least-squares prototype reproduced the same field with maximum
+error 5.96e-8, retained generator values exactly, and stayed within native
+neighbour bounds. This isolates one source of artificial texture; it does not
+identify every feature in the real snapshot images.
+
+Native M4 previews of the same four cached scenes/cameras completed at 1440 by
+960 with four subpixel rays and two cell samples in 0.28, 0.61, 0.72, and 0.28 s
+of GPU time (binary, disk, remnant, outflow respectively). All reported zero
+traversal failures. The gradients are a fast preview improvement, but the disk
+still contains visible texture and the colour/opacity mapping hides some inner
+structure. They are not being accepted as polished movie frames.
+
+A bounded moving least-squares prototype also passed the affine check
+(maximum error 1.79e-7). At 960 by 640 and one ray per pixel, it cost 3.43 s for
+the disk, 4.14 s for the remnant, and 1.64 s for the outflow. It softened texture
+but did not establish the desired visual quality and is retained as a separate
+experiment, outside the live viewer. The limited linear mode replaces Shepard
+as the interactive default; original values and legacy presets remain usable.
+
+The release checks add affine reproduction, strongly unequal native spacing,
+local no-overshoot bounds, hidden non-finite fields, and reported gradient
+fallbacks. All 56 software regression checks passed on the M4 Pro in 6.471 s.
+Final capture packaging is in progress.
 
 The user's refinement caveat is an acceptance condition: do not attribute
 remaining texture to coarse low-density cells from a constant-mass assumption.

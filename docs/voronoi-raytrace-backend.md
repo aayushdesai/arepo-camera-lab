@@ -26,7 +26,25 @@ Periodic generator positions and ghost-neighbour planes remain available.
 The Metal locator indexes every generator and starts each ray at the periodic
 display-box entrance. All traversed cells are available, including ones that
 make no visible contribution. The **Original cell values** mode holds each
-exported field constant within its native cell. **Smooth field** interpolates
+exported field constant within its native cell.
+
+The default **Linear field** mode uses inverse-distance-squared weighted
+least-squares gradients from the stored native neighbour displacements. It fits
+the transformed colour scalar and display extinction separately. A slope
+limiter constrains extrapolation towards neighbour generators; each sampled
+value is also bounded by the parent and its neighbours. Degenerate or
+unsupported fits use a zero gradient and are counted in the render report.
+Undefined parent colour stays hidden. Periodic displacements come from the
+native graph, and no density-to-cell-size assumption enters the fit.
+
+Gradients are computed in a Metal pass when the transfer changes and remain on
+the GPU across camera changes. This removes the flat plateaus around generators
+introduced by the old distance-weighted interpolator. A synthetic smooth affine
+field is reproduced to float32 accuracy in a region where the limiter is inactive.
+The field can still jump between independently limited cells; it is not strictly
+continuous, nor is it AREPO's own gradient or a conservative mass reconstruction.
+
+The selectable **Legacy smoothing** mode interpolates
 the transformed colour scalar and display extinction using a compact Shepard
 kernel. Up to eight nearby generators have positive weights; the ninth nearest
 generator sets the zero-weight support radius. Distances use periodic minimum
@@ -42,9 +60,9 @@ weight, avoiding the ordinary nearest-cell jumps. Non-emitting or undefined
 colour samples do not contribute to colour interpolation; their zero extinction
 still participates in the transparency interpolation.
 
-This is display interpolation, not AREPO's own gradient reconstruction, exact
+These are display interpolations, not AREPO's own gradient reconstruction, exact
 Sibson natural-neighbour interpolation, or a conservative reconstruction of gas
-mass. It is not guaranteed to preserve a sharp shock. Original cell values remain
+mass. Neither is guaranteed to preserve a sharp shock. Original cell values remain
 available, and older saved volume presets keep that original mode. A smoother
 image is not evidence of better physical resolution. Cell sizes must be
 interpreted using the particular simulation's actual refinement/derefinement
@@ -70,8 +88,8 @@ The transfer is an illustrative display model, not a calibrated synthetic
 observation or the production ArepoRT optical model. Field colour and density
 transparency are independent. Values outside the chosen field range contribute
 no emission or extinction at their generators. The original-cell mode uses
-this transfer for each segment. The smooth mode interpolates the resulting
-coefficient and transformed colour scalar, softening visibility boundaries too:
+this transfer for each segment. The reconstructed modes vary the resulting
+coefficient and transformed colour scalar within the volume:
 
 ```text
 tau = -ln(max(1 - opacity, 0.001))
@@ -161,7 +179,8 @@ is ready. Volume-only use creates no VTK/OpenGL window.
 `capture-mesh` consumes a hash-bound JSON config. Set each frame's
 `parameters.representation` to `volume` or `faces` (the API default remains
 `faces` for existing callers). Volume settings live under `parameters.volume`;
-`volume.reconstruction` is `continuous` or `piecewise_constant`.
+`volume.reconstruction` is `linear` (default), `piecewise_constant`, or
+`continuous` (legacy compact Shepard).
 `subpixel_samples` is 1 or 4 and `cell_samples` is 1 or 2 for interpolation. See the [volume example](../examples/native-volume-capture.example.json)
 and [face example](../examples/native-capture.example.json).
 
@@ -194,7 +213,7 @@ No raw snapshot reads or scientific production jobs were moved onto the Mac.
 
 [AREPO-VTK](https://github.com/dnelson/ArepoVTK) describes ray integration through
 unstructured Voronoi fields and offers several reconstruction modes. The
-compact Shepard display interpolator here is a separate implementation. This companion consumes the complete scenes
+display interpolators here are separate implementations. This companion consumes the complete scenes
 exported by this project's AREPO-VTK workflow; it does not port its CUDA optical
 profiles or claim the same reconstruction. VTK continues to supply the explicit
 geometry/camera/picking tools. The Metal shader is compiled from source through
@@ -204,3 +223,26 @@ Arbitrary raw-HDF5 loading still needs the compatible AREPO-VTK snapshot/mesh/EO
 reader and its field/unit contract, with the workspace's required execution
 placement. The current live selector acquires only the requested verified
 scene/sidecar pair from the existing catalog.
+
+## Native constructor and local cache
+
+The inspected AREPO-VTK source calls `read_ic()` and then native `init()`
+(including `create_mesh()`) on its mesh path. The v052 exporter records the
+resulting native connectivity and neighbour displacements. Camera Lab uses
+these prepared planes; it does not call AREPO's constructor on every frame.
+This source-path check is not a bit-for-bit audit of the historical simulation
+binary or exported mesh vertices.
+
+The verified scene and sidecar cache is on the Mac's local APFS volume. A cache
+hit in `acquire_verified_file()` verifies the checksum and returns before rsync.
+Camera and display changes use the resident worker, and revisiting a cached
+snapshot reloads local arrays. A missing prepared pair is transferred once and
+then reused. The reconstruction comparisons used these local files; the only
+recent cluster reads were small configuration/source files and bounded log
+prefixes for the refinement-context check. No raw snapshot was fetched for them.
+
+Ordinary Quit stops the local worker/server without needing SSH. Explicit
+archival may delete a verified local cache after backup; a later visit would
+then acquire that prepared scene again. Arbitrary raw-snapshot loading remains
+separate work: construct once in the eta scientific lane and cache the prepared
+result, rather than repeatedly reading HDF5 for camera changes.

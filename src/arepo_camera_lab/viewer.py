@@ -608,7 +608,7 @@ body.capture-mode #view, body.capture-mode #meshImage { left: 0; width: 100vw; h
       <label for="volumeFloorSoftening">Density threshold transition (dex)</label><input id="volumeFloorSoftening" type="number" value="1" min="0" max="4" step="0.1">
       <div class="meta">Opacity applies at this density over this path length. Longer paths make the view more transparent. These are display settings.</div>
     </details>
-    <label for="volumeReconstruction">Field reconstruction</label><select id="volumeReconstruction"><option value="continuous">Smooth field</option><option value="piecewise_constant">Original cell values</option></select>
+    <label for="volumeReconstruction">Field reconstruction</label><select id="volumeReconstruction"><option value="linear">Linear field</option><option value="piecewise_constant">Original cell values</option><option value="continuous">Legacy smoothing · slow</option></select>
     <div class="meta">Smooth field interpolates between native cells. It does not add simulation resolution.</div>
     <label for="volumeQuality">Image quality</label><select id="volumeQuality"><option value="4">High · antialiased</option><option value="1">Fast</option></select>
   </div>
