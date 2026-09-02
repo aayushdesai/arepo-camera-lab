@@ -74,8 +74,16 @@ weighting. The field colour, camera, and original pose remain independent.
 **Hide cells below density** starts at 100 g cm^-3; the outflow preset lowers it
 to 0.01 g cm^-3. Advanced controls expose reference density, physical path
 length, and density weighting. These are display settings, not calibrated
-radiation transport. High quality integrates four deterministic subpixel rays;
-a smaller frame renders during orbit/zoom and refines after interaction stops.
+radiation transport. **Field reconstruction** selects **Smooth field** or
+**Original cell values**. Smooth field interpolates between nearby native cells;
+it does not add simulation resolution and can soften shocks. Original cell
+values retain the discontinuous field for debugging. The gas-density channel
+is the simulation mass density in g cm^-3, not a density proxy.
+
+High quality integrates four deterministic subpixel rays with two samples per
+cell; a smaller frame with one of each renders during orbit/zoom and refines
+after interaction stops. Smooth reconstruction costs more GPU time than original
+cell values. Existing saved volume presets retain their original reconstruction.
 
 **Fit visible mesh** frames the visible cells without editing an imported
 camera alternative. Orbit, pan, deep zoom, all physical/derived channels,

@@ -19,7 +19,7 @@ static_assert(sizeof(KDNode) == 32 && sizeof(Uniforms) == 96, "Metal buffer layo
 struct Volume {
   id<MTLDevice> device;
   id<MTLCommandQueue> queue;
-  id<MTLComputePipelineState> pipeline;
+  id<MTLComputePipelineState> pipeline, samplePipeline;
   id<MTLBuffer> positions, offsets, edges, nodes, order, fields, palette;
   uint32_t count, root;
   std::string deviceName;
@@ -86,6 +86,9 @@ extern "C" void* av_create(const char* shaderPath, const float* positions,
       id<MTLFunction> function = [library newFunctionWithName:@"nativeVolume"];
       v->pipeline = [v->device newComputePipelineStateWithFunction:function error:&problem];
       if(!v->pipeline) throw std::runtime_error([[problem localizedDescription] UTF8String]);
+      function = [library newFunctionWithName:@"sampleFields"];
+      v->samplePipeline = [v->device newComputePipelineStateWithFunction:function error:&problem];
+      if(!v->samplePipeline) throw std::runtime_error([[problem localizedDescription] UTF8String]);
       v->count = count;
       v->positions = buffer(v, positions, size_t(count)*16);
       v->offsets = buffer(v, offsets, size_t(count+1)*4);
@@ -121,16 +124,19 @@ extern "C" int av_fields(void* handle, const float* fields, const float* palette
 }
 
 extern "C" int av_render(void* handle, uint32_t width, uint32_t height,
-                          uint32_t subpixels, uint32_t maxSteps, const float* camera,
+                          uint32_t subpixels, uint32_t maxSteps,
+                          uint32_t reconstruction, uint32_t cellSamples, const float* camera,
                           float* pixels, uint32_t* stats, double* gpuSeconds,
                           char* error, size_t errorSize) {
   @autoreleasepool {
     try {
       auto* v = static_cast<Volume*>(handle);
       if(!v->fields || !v->palette) throw std::runtime_error("Set the native volume transfer before rendering");
+      if(reconstruction>1 || (cellSamples!=1 && cellSamples!=2))
+        throw std::runtime_error("Invalid native volume reconstruction or cell sampling");
       const size_t rays = size_t(width)*height*subpixels;
       if(!rays || rays > 1920ul*1200*4) throw std::runtime_error("Native volume viewport exceeds its pixel budget");
-      Uniforms u{{width,height,subpixels,maxSteps}, {}, {v->count,v->root,0,0}};
+      Uniforms u{{width,height,subpixels,maxSteps}, {}, {v->count,v->root,reconstruction,cellSamples}};
       std::memcpy(u.camera, camera, sizeof(u.camera));
       id<MTLBuffer> output = [v->device newBufferWithLength:rays*16 options:MTLResourceStorageModeShared];
       id<MTLBuffer> status = [v->device newBufferWithLength:rays*16 options:MTLResourceStorageModeShared];
@@ -151,6 +157,35 @@ extern "C" int av_render(void* handle, uint32_t width, uint32_t height,
       *gpuSeconds = command.GPUEndTime-command.GPUStartTime;
       return 0;
     } catch(const std::exception& ex) {errorMessage(error, errorSize, ex.what());return 1;}
+  }
+}
+
+extern "C" int av_sample_fields(void* handle, const float* points, uint32_t count,
+                                 float box, float* values, char* error, size_t errorSize) {
+  @autoreleasepool {
+    try {
+      auto* v=static_cast<Volume*>(handle);
+      if(!v->fields || !count || count>1000000 || !(box>0))
+        throw std::runtime_error("Invalid native field sample request");
+      auto queries=buffer(v,points,size_t(count)*16);
+      id<MTLBuffer> output=[v->device newBufferWithLength:size_t(count)*8 options:MTLResourceStorageModeShared];
+      if(!output)throw std::runtime_error("Metal sample allocation failed");
+      id<MTLCommandBuffer> command=[v->queue commandBuffer];
+      id<MTLComputeCommandEncoder> encoder=[command computeCommandEncoder];
+      [encoder setComputePipelineState:v->samplePipeline];
+      NSArray* buffers=@[v->positions,v->offsets,v->edges,v->nodes,v->order,v->fields,queries,output];
+      for(NSUInteger i=0;i<buffers.count;i++)[encoder setBuffer:buffers[i] offset:0 atIndex:i];
+      uint32_t counts[4]{count,v->count,v->root,0};
+      [encoder setBytes:counts length:sizeof(counts) atIndex:8];
+      [encoder setBytes:&box length:sizeof(box) atIndex:9];
+      NSUInteger group=std::min(NSUInteger(128),v->samplePipeline.maxTotalThreadsPerThreadgroup);
+      [encoder dispatchThreads:MTLSizeMake(count,1,1) threadsPerThreadgroup:MTLSizeMake(group,1,1)];
+      [encoder endEncoding];[command commit];[command waitUntilCompleted];
+      if(command.status!=MTLCommandBufferStatusCompleted)
+        throw std::runtime_error([[command.error localizedDescription] UTF8String]);
+      std::memcpy(values,output.contents,size_t(count)*8);
+      return 0;
+    }catch(const std::exception& ex){errorMessage(error,errorSize,ex.what());return 1;}
   }
 }
 

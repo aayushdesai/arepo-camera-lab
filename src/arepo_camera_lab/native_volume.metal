@@ -6,6 +6,56 @@ struct Edge { packed_float3 delta; uint neighbor; };
 struct KDNode { float split; uint axis, left, right, first, last, pad0, pad1; };
 struct Uniforms { uint4 shape; float4 target, forward, right, up; uint4 scene; };
 
+struct NearestNine { float distance[9]; uint cell[9]; };
+
+// The k nearest sites form a connected subgraph of a Voronoi neighbour graph.
+// Expand the nearest unvisited site until the eight positively weighted sites
+// are settled; the ninth site sets the zero-weight support boundary.
+float2 continuousFields(float3 point, float box, device const float4* positions,
+                        device const uint* offsets, device const Edge* edges,
+                        device const float2* fields,uint seed,uint count) {
+  NearestNine nearest;bool expanded[9];
+  for(uint k=0;k<9;k++){nearest.distance[k]=INFINITY;nearest.cell[k]=0xffffffff;expanded[k]=false;}
+  float3 d=positions[seed].xyz-point;d-=round(d/box)*box;
+  nearest.cell[0]=seed;nearest.distance[0]=dot(d,d);
+  bool complete=false;
+  for(uint iteration=0;iteration<32;iteration++) {
+    uint slot=9;
+    for(uint k=0;k<8;k++)if(nearest.cell[k]!=0xffffffff&&!expanded[k]){slot=k;break;}
+    if(slot==9){complete=true;break;}
+    uint parent=nearest.cell[slot];expanded[slot]=true;
+    for(uint e=offsets[parent];e<offsets[parent+1];e++) {
+      uint candidate=(edges[e].neighbor&0x7fffffff)-1;
+      if(candidate>=count)return float2(NAN,NAN);
+      d=positions[candidate].xyz-point;d-=round(d/box)*box;
+      float d2=dot(d,d);
+      if(d2>=nearest.distance[8])continue;
+      bool duplicate=false;
+      for(uint k=0;k<9;k++)if(nearest.cell[k]==candidate){duplicate=true;break;}
+      if(duplicate)continue;
+      uint insert=8;
+      while(insert>0 && d2<nearest.distance[insert-1]) {
+        nearest.distance[insert]=nearest.distance[insert-1];nearest.cell[insert]=nearest.cell[insert-1];
+        expanded[insert]=expanded[insert-1];--insert;
+      }
+      nearest.distance[insert]=d2;nearest.cell[insert]=candidate;expanded[insert]=false;
+    }
+  }
+  if(!complete || nearest.cell[min(count,9u)-1]==0xffffffff)return float2(NAN,NAN);
+  if(nearest.distance[0]==0)return fields[nearest.cell[0]];
+  float closest=sqrt(nearest.distance[0]),radius=sqrt(nearest.distance[8]);
+  float2 sum=0;float total=0,colorWeight=0;
+  for(uint k=0;k<9;k++)if(nearest.cell[k]!=0xffffffff) {
+    float d=sqrt(nearest.distance[k]);
+    float a=closest/d-closest/radius,weight=a*a;
+    float2 value=fields[nearest.cell[k]];
+    if(isfinite(value.x)&&value.y>0){sum.x+=weight*value.x;colorWeight+=weight;}
+    sum.y+=weight*value.y;total+=weight;
+  }
+  if(!(total>0))return fields[nearest.cell[0]];
+  return float2(colorWeight>0?sum.x/colorWeight:NAN,sum.y/total);
+}
+
 uint nearestCell(float3 point, device const float4* positions,
                  device const KDNode* nodes, device const uint* order, uint root) {
   uint pending[64], top=0, current=root, found=0;
@@ -28,6 +78,43 @@ uint nearestCell(float3 point, device const float4* positions,
     }
   }
   return found;
+}
+
+uint periodicNearest(float3 point,float box,device const float4* positions,
+                     device const KDNode* nodes,device const uint* order,uint root) {
+  point-=round(point/box)*box;
+  uint found=nearestCell(point,positions,nodes,order,root);
+  float3 d=positions[found].xyz-point;
+  float best=dot(d,d);float3 boundary=box/2-abs(point);
+  for(uint mask=1;mask<8;mask++) {
+    float bound=0;float3 other=point;
+    for(uint axis=0;axis<3;axis++)if(mask&(1u<<axis)) {
+      bound+=boundary[axis]*boundary[axis];other[axis]+=point[axis]>=0?-box:box;
+    }
+    if(bound>best)continue;
+    uint candidate=nearestCell(other,positions,nodes,order,root);
+    d=positions[candidate].xyz-other;
+    if(dot(d,d)<best){best=dot(d,d);found=candidate;}
+  }
+  return found;
+}
+
+// Direct sampling makes reconstruction checks independent of ray quadrature.
+kernel void sampleFields(device const float4* positions [[buffer(0)]],
+                          device const uint* offsets [[buffer(1)]],
+                          device const Edge* edges [[buffer(2)]],
+                          device const KDNode* nodes [[buffer(3)]],
+                          device const uint* order [[buffer(4)]],
+                          device const float2* fields [[buffer(5)]],
+                          device const float4* points [[buffer(6)]],
+                          device float2* output [[buffer(7)]],
+                          constant uint4& counts [[buffer(8)]],
+                          constant float& box [[buffer(9)]],
+                          uint index [[thread_position_in_grid]]) {
+  if(index>=counts.x)return;
+  float3 point=points[index].xyz;
+  uint seed=periodicNearest(point,box,positions,nodes,order,counts.z);
+  output[index]=continuousFields(point,box,positions,offsets,edges,fields,seed,counts.y);
 }
 
 // Compensated accumulation prevents many short steps losing their distance
@@ -72,7 +159,7 @@ kernel void nativeVolume(device const float4* positions [[buffer(0)]],
   float3 background=float3(0.00212469f,0.00334654f,0.00477695f); // sRGB #070b0f in linear light.
   if(!intersects||exit<=entry) {pixels[index]=float4(background,0);statistics[index]=0;return;}
   float3 start=fma(entry,direction,origin);
-  uint cell=nearestCell(start,positions,nodes,order,u.scene.y),previous=0xffffffff;
+  uint cell=periodicNearest(start,box,positions,nodes,order,u.scene.y),previous=0xffffffff;
   float2 distance=float2(entry,0);
   float3 color=0;
   float transmission=1;
@@ -97,16 +184,23 @@ kernel void nativeVolume(device const float4* positions [[buffer(0)]],
     float remaining=(exit-distance.x)-distance.y;
     length=min(length,remaining);
     if(length>0) {
-      float2 field=fields[cell];
-      if(field.y>0 && isfinite(field.x)) {
-        float tau=min(80.0f,field.y*length);
-        float alpha=tau<0.001f?tau*(1-0.5f*tau+tau*tau/6):1-exp(-tau);
-        float v=clamp(field.x,0.0f,1.0f)*511;
-        uint left=min(uint(v),510u);
-        float3 emission=mix(palette[left].xyz,palette[left+1].xyz,v-left);
-        color+=transmission*alpha*emission;
-        transmission*=1-alpha;
+      uint samples=u.scene.z?u.scene.w:1;
+      for(uint sample=0;sample<samples;sample++) {
+        float fraction=samples==2?(sample==0?0.2113248654f:0.7886751346f):0.5f;
+        float3 point=fma(distance.x,direction,origin)+(distance.y+length*fraction)*direction;
+        float2 field=u.scene.z?continuousFields(point,box,positions,offsets,edges,fields,cell,u.scene.x):fields[cell];
+        if(!isfinite(field.y)||field.y<0){status=64;break;}
+        if(field.y>0 && isfinite(field.x)) {
+          float tau=min(80.0f,field.y*length/samples);
+          float alpha=tau<0.001f?tau*(1-0.5f*tau+tau*tau/6):1-exp(-tau);
+          float v=clamp(field.x,0.0f,1.0f)*511;
+          uint left=min(uint(v),510u);
+          float3 emission=mix(palette[left].xyz,palette[left+1].xyz,v-left);
+          color+=transmission*alpha*emission;
+          transmission*=1-alpha;
+        }
       }
+      if(status)break;
       zeros=0;
     } else {zeros++;totalZeros++;}
     if(zeros>16){status=32;break;}

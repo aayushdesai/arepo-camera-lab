@@ -2,6 +2,7 @@ const renderMode=document.getElementById('renderMode'),meshImage=document.getEle
 const meshEdges=document.getElementById('meshEdges'),meshInterior=document.getElementById('meshInterior'),meshLighting=document.getElementById('meshLighting');
 const meshDensityFloor=document.getElementById('meshDensityFloor'),meshFit=document.getElementById('meshFit');
 const volumeControls=document.getElementById('volumeControls'),volumeProfile=document.getElementById('volumeProfile'),volumeDensityReference=document.getElementById('volumeDensityReference'),volumeOpacityLength=document.getElementById('volumeOpacityLength'),volumeDensityPower=document.getElementById('volumeDensityPower'),volumeQuality=document.getElementById('volumeQuality');
+const volumeReconstruction=document.getElementById('volumeReconstruction'),volumeFloorSoftening=document.getElementById('volumeFloorSoftening');
 const measurementHud=document.getElementById('measurementHud'),timeLabel=document.getElementById('timeLabel'),scaleLabel=document.getElementById('scaleLabel'),scaleLine=document.getElementById('scaleLine');
 const legendTitle=document.getElementById('legendTitle'),legendGradient=document.getElementById('legendGradient'),legendLow=document.getElementById('legendLow'),legendHigh=document.getElementById('legendHigh');
 const rulerToggle=document.getElementById('rulerToggle'),rulerStatus=document.getElementById('rulerStatus'),rulerOverlay=document.getElementById('rulerOverlay'),showAnnotations=document.getElementById('showAnnotations'),measureUnit=document.getElementById('measureUnit');
@@ -23,18 +24,18 @@ function syncNativeControls(){
   meshDensityFloor.disabled=meshFit.disabled=!nativeMode();
   if(!rulerPoints.length)rulerStatus.textContent=renderMode.value==='mesh'?'The ruler picks native cell surfaces and measures 3D distance.':'The ruler measures projected distance in the camera plane.';
 }
-function volumeState(){return {density_reference:+volumeDensityReference.value,opacity_length_cm:+volumeOpacityLength.value*1e5,density_power:+volumeDensityPower.value,floor_softening_dex:1};}
+function volumeState(){return {density_reference:+volumeDensityReference.value,opacity_length_cm:+volumeOpacityLength.value*1e5,density_power:+volumeDensityPower.value,floor_softening_dex:+volumeFloorSoftening.value,reconstruction:volumeReconstruction.value};}
 volumeProfile.onchange=()=>{
   const profile={disk:[100,1e4,.5],remnant:[100,1e6,.7],outflow:[.01,1e4,.5]}[volumeProfile.value];
-  if(profile){meshDensityFloor.value=String(profile[0]);volumeDensityReference.value=String(profile[1]);volumeDensityPower.value=String(profile[2]);volumeOpacityLength.value='10000';noteNativeInteraction();markStyleDirty();}
+  if(profile){meshDensityFloor.value=String(profile[0]);volumeDensityReference.value=String(profile[1]);volumeDensityPower.value=String(profile[2]);volumeOpacityLength.value='10000';volumeFloorSoftening.value='1';noteNativeInteraction();markStyleDirty();}
 };
-for(const control of [volumeDensityReference,volumeOpacityLength,volumeDensityPower])control.addEventListener('input',()=>{volumeProfile.value='custom';noteNativeInteraction();});
+for(const control of [volumeDensityReference,volumeOpacityLength,volumeDensityPower,volumeFloorSoftening])control.addEventListener('input',()=>{volumeProfile.value='custom';noteNativeInteraction();});
 syncNativeControls();
 function meshStyle(){const [low,high]=safeRange();return {channel:channel.value,scale_mode:scaleMode.value,low,high,linthresh:rangeState.linthresh,palette:palette.value,gamma:+gamma.value,saturation:+saturation.value,brightness:+brightness.value,invert:invert.checked,opacity:+opacity.value};}
 function meshParameters(){
   const interactive=dragging||Date.now()<nativeInteractiveUntil,limit=interactive?480:1440;
   const factor=Math.min(1,limit/canvas.width,1200/canvas.height),width=Math.max(1,Math.round(canvas.width*factor)),height=Math.max(1,Math.round(canvas.height*factor));
-  return {scene_sha256:DATA.scene.sha256,representation:renderMode.value==='volume'?'volume':'faces',camera:{target:[...camera.target],forward:[...camera.forward],up:[...camera.up],scale:camera.scale},style:meshStyle(),derived_channels:derivedDefinitions,edges:meshEdges.checked,interior_faces:meshInterior.checked,lighting:meshLighting.checked,density_floor:+meshDensityFloor.value,volume:volumeState(),subpixel_samples:interactive?1:+volumeQuality.value,fit_visible:meshFitRequested,width,height};
+  return {scene_sha256:DATA.scene.sha256,representation:renderMode.value==='volume'?'volume':'faces',camera:{target:[...camera.target],forward:[...camera.forward],up:[...camera.up],scale:camera.scale},style:meshStyle(),derived_channels:derivedDefinitions,edges:meshEdges.checked,interior_faces:meshInterior.checked,lighting:meshLighting.checked,density_floor:+meshDensityFloor.value,volume:volumeState(),subpixel_samples:interactive?1:+volumeQuality.value,cell_samples:interactive||+volumeQuality.value===1?1:2,fit_visible:meshFitRequested,width,height};
 }
 function meshKey(params){return JSON.stringify(params);}
 async function requestNativeFrame(force=false){
@@ -54,7 +55,7 @@ async function requestNativeFrame(force=false){
       if(sequence!==meshRequestSequence||renderMode.value!==requestedMode)return;
       meshImage.style.display='block';meshLastKey=key;meshDisplayedCamera={...result.report.camera,...cleanBasis(result.report.camera.forward,result.report.camera.up)};meshLastReport=result.report;
       if(params.fit_visible){meshFitRequested=false;setCamera(meshDisplayedCamera);meshLastKey=meshKey(meshParameters());}
-      const r=result.report,method=r.representation==='volume'?`Metal volume · ${r.subpixel_samples} rays/pixel`:`${r.faces.toLocaleString()} native faces`;meshNotice.textContent=`${r.selected_cells.toLocaleString()} / ${r.native_cell_count.toLocaleString()} visible cells · ${method} · ${r.render_seconds.toFixed(2)} s`;
+      const r=result.report,method=r.representation==='volume'?`Metal volume · ${r.reconstruction==='continuous'?'smooth field':'original cells'} · ${r.subpixel_samples} rays/pixel`:`${r.faces.toLocaleString()} native faces`;meshNotice.textContent=`${r.selected_cells.toLocaleString()} / ${r.native_cell_count.toLocaleString()} visible cells · ${method} · ${r.render_seconds.toFixed(2)} s`;
       if(r.empty_native_faces)meshNotice.textContent+=` · ${r.empty_native_faces} zero-area native faces`;
     }catch(error){meshFailureKey=key;meshNotice.textContent='Mesh view: '+error.message;}
     finally{meshBusy=false;}
@@ -134,8 +135,8 @@ function applyMeshViewState(state){
   if(!state||state.schema!=='arepo_camera_lab_mesh_view_v001')return;
   renderMode.value=state.renderer==='volume'&&volumeLive?'volume':state.renderer==='mesh'&&meshLive?'mesh':'points';
   meshDensityFloor.value=String(state.density_floor);meshEdges.checked=Boolean(state.edges);meshInterior.checked=Boolean(state.interior_faces);meshLighting.checked=Boolean(state.lighting);showAnnotations.checked=Boolean(state.annotations);measureUnit.value=state.measurement_unit||'auto';
-  if(state.volume){volumeDensityReference.value=String(state.volume.density_reference);volumeOpacityLength.value=String(state.volume.opacity_length_cm/1e5);volumeDensityPower.value=String(state.volume.density_power);volumeProfile.value=state.volume_profile||'custom';volumeQuality.value=String(state.subpixel_samples||4);}
+  if(state.volume){volumeDensityReference.value=String(state.volume.density_reference);volumeOpacityLength.value=String(state.volume.opacity_length_cm/1e5);volumeDensityPower.value=String(state.volume.density_power);volumeFloorSoftening.value=String(state.volume.floor_softening_dex??1);volumeReconstruction.value=state.volume.reconstruction||'piecewise_constant';volumeProfile.value=state.volume_profile||'custom';volumeQuality.value=String(state.subpixel_samples||4);}
   meshRequestSequence++;meshLastKey=null;meshLastReport=null;meshDisplayedCamera=null;meshImage.style.display='none';rulerPoints=[];rulerKind=null;rulerProjection=null;syncNativeControls();
 }
-for(const control of [renderMode,meshDensityFloor,meshEdges,meshInterior,meshLighting,showAnnotations,measureUnit,volumeProfile,volumeDensityReference,volumeOpacityLength,volumeDensityPower,volumeQuality]){control.addEventListener('input',markStyleDirty);control.addEventListener('change',markStyleDirty);}
-for(const control of [meshDensityFloor,volumeDensityReference,volumeOpacityLength,volumeDensityPower,opacity,gamma,saturation,brightness])control.addEventListener('input',noteNativeInteraction);
+for(const control of [renderMode,meshDensityFloor,meshEdges,meshInterior,meshLighting,showAnnotations,measureUnit,volumeProfile,volumeDensityReference,volumeOpacityLength,volumeDensityPower,volumeQuality,volumeFloorSoftening,volumeReconstruction]){control.addEventListener('input',markStyleDirty);control.addEventListener('change',markStyleDirty);}
+for(const control of [meshDensityFloor,volumeDensityReference,volumeOpacityLength,volumeDensityPower,volumeFloorSoftening,opacity,gamma,saturation,brightness])control.addEventListener('input',noteNativeInteraction);

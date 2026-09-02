@@ -19,8 +19,8 @@
           "saturation": 1, "brightness": 1, "opacity": 0.72
         },
         "density_floor": 100,
-        "volume": {"density_reference": 10000, "density_power": 0.5, "opacity_length_cm": 1000000000, "floor_softening_dex": 1},
-        "subpixel_samples": 4, "width": 1440, "height": 960
+        "volume": {"density_reference": 10000, "density_power": 0.5, "opacity_length_cm": 1000000000, "floor_softening_dex": 1, "reconstruction": "continuous"},
+        "subpixel_samples": 4, "cell_samples": 2, "width": 1440, "height": 960
       }
     },
     {
@@ -37,8 +37,8 @@
           "saturation": 1, "brightness": 1, "opacity": 0.72
         },
         "density_floor": 0.01,
-        "volume": {"density_reference": 10000, "density_power": 0.5, "opacity_length_cm": 1000000000, "floor_softening_dex": 1},
-        "subpixel_samples": 4, "width": 1440, "height": 960
+        "volume": {"density_reference": 10000, "density_power": 0.5, "opacity_length_cm": 1000000000, "floor_softening_dex": 1, "reconstruction": "continuous"},
+        "subpixel_samples": 4, "cell_samples": 2, "width": 1440, "height": 960
       }
     }
   ]

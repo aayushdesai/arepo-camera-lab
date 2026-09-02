@@ -14,7 +14,7 @@ import numpy as np
 from arepo_camera_lab import mesh_render, server, viewer, volume_render
 
 
-def lattice(path: Path, invalid=False, translation=0.0):
+def lattice(path: Path, invalid=False, translation=0.0, sites=(.5, 1.5, 2.5)):
     """27 unit Voronoi cubes, including explicit periodic ghost neighbours."""
     n = 27
     header = viewer.HEADER_STRUCT.pack(
@@ -24,7 +24,7 @@ def lattice(path: Path, invalid=False, translation=0.0):
     xyz = list(itertools.product(range(3), repeat=3))
     lookup = {p: i for i, p in enumerate(xyz)}
     cells = np.zeros(n, dtype=viewer.CELL_DTYPE)
-    cells["position"] = np.array(xyz) + .5 + translation
+    cells["position"] = np.asarray(sites)[np.array(xyz)] + translation
     cells["density"], cells["temperature"] = 10, 100
     cells["particle_id"] = np.arange(n, dtype=np.uint64) + np.uint64(2**63+37)
     edges = np.zeros(n*6, dtype=[("delta", "<f4", (3,)), ("neighbor", "<u4")])
@@ -36,7 +36,7 @@ def lattice(path: Path, invalid=False, translation=0.0):
                 neighbor[axis] += sign
                 ghost = not 0 <= neighbor[axis] < 3
                 neighbor[axis] %= 3
-                edges["delta"][j, axis] = sign
+                edges["delta"][j, axis] = sites[neighbor[axis]]-sites[p[axis]]+(3*sign if ghost else 0)
                 edges["neighbor"][j] = (lookup[tuple(neighbor)]+1) | (0x80000000 if ghost else 0)
     if invalid:
         edges["neighbor"][lookup[(1, 1, 1)]*6+4] = 0
@@ -70,6 +70,8 @@ class VolumeTransferTest(unittest.TestCase):
                            ("opacity_length_cm", float("nan")), ("floor_softening_dex", 5)):
             with self.assertRaises(ValueError):
                 volume_render.volume_options({"volume": {key: value}})
+        with self.assertRaisesRegex(ValueError, "reconstruction"):
+            volume_render.volume_options({"volume": {"reconstruction": "invented"}})
         options = volume_render.volume_options({})
         result = volume_render.extinction([float("nan"), 1.], np.array([False, True]), 0, .5, 2., options)
         self.assertEqual(result[0], 0)
@@ -102,14 +104,80 @@ class NativeMetalTest(unittest.TestCase):
         palette = np.tile([*color, 1], (512, 1)).astype(np.float32)
         self.volume.upload_transfer(fields, palette)
         background = np.array([.00212469, .00334654, .00477695])
-        for direction, chord in (((0, 0, 1), 3), ((1, 0, 1), 3*math.sqrt(2)), ((0, 0, -1), 3)):
-            image, report = self.volume.trace(self.camera(direction), 1, 1, 1)
-            transmission = math.exp(-.25*chord)
-            np.testing.assert_allclose(image[0, 0, :3], (1-transmission)*color+transmission*background, atol=2e-6)
-            self.assertEqual(report["traversal_failures"], 0)
+        for mode, samples in (("piecewise_constant", 1), ("continuous", 1), ("continuous", 2)):
+            for direction, chord in (((0, 0, 1), 3), ((1, 0, 1), 3*math.sqrt(2)), ((0, 0, -1), 3)):
+                image, report = self.volume.trace(self.camera(direction), 1, 1, 1, mode, samples)
+                transmission = math.exp(-.25*chord)
+                np.testing.assert_allclose(image[0, 0, :3], (1-transmission)*color+transmission*background, atol=2e-6)
+                self.assertEqual(report["traversal_failures"], 0)
         zoomed, _ = self.volume.trace(self.camera(scale=.01), 1, 1, 1)
         np.testing.assert_allclose(zoomed, image, atol=2e-6)
         self.assertIsNone(self.owner.plotter)  # Volume preview needs no OpenGL window.
+
+    def test_continuous_field_matches_independent_periodic_neighbour_search(self):
+        rng = np.random.default_rng(173)
+        fields = rng.uniform(.05, 1., (27, 2)).astype(np.float32)
+        self.volume.upload_transfer(fields, np.ones((512, 4), np.float32))
+        positions = self.volume.positions[:, :3]
+        # Includes box crossings and translations by several periodic lengths.
+        points = rng.uniform(-4.5, 4.5, (512, 3)).astype(np.float32)
+        expected = []
+        for point in points:
+            relative = positions.astype(float)-point.astype(float)
+            relative -= np.round(relative/3)*3
+            distances = np.linalg.norm(relative, axis=1)
+            order = np.argsort(distances)[:9]
+            d = distances[order]
+            weights = (d[0]/d-d[0]/d[-1])**2
+            expected.append(np.sum(fields[order]*weights[:, None], axis=0)/weights.sum())
+        result = self.volume.sample_fields(points)
+        np.testing.assert_allclose(result, expected, rtol=3e-5, atol=3e-6)
+        self.assertTrue(np.all(result >= fields.min(axis=0)-1e-6))
+        self.assertTrue(np.all(result <= fields.max(axis=0)+1e-6))
+        np.testing.assert_array_equal(self.volume.sample_fields(positions), fields)
+
+    def test_continuity_across_cell_faces_and_periodic_boundaries(self):
+        rng = np.random.default_rng(319)
+        fields = rng.uniform(.1, 1., (27, 2)).astype(np.float32)
+        self.volume.upload_transfer(fields, np.ones((512, 4), np.float32))
+        points = rng.uniform(-1.4, 1.4, (128, 3)).astype(np.float32)
+        for boundary in (.5, 1.5):
+            left, right = points.copy(), points.copy()
+            left[:, 0], right[:, 0] = boundary-1e-5, boundary+1e-5
+            difference = self.volume.sample_fields(left)-self.volume.sample_fields(right)
+            self.assertLess(float(np.max(np.abs(difference))), 2e-4)
+
+    def test_nonuniform_cell_spacing_uses_geometry_instead_of_a_density_size_law(self):
+        owner = mesh_render.NativeMeshRenderer(lattice(self.root/"uneven.bin", sites=(.05, .07, 2.7)), self.root)
+        volume = volume_render.MetalVolume(owner)
+        try:
+            rng = np.random.default_rng(589)
+            fields = rng.uniform(.1, 1., (27, 2)).astype(np.float32)
+            volume.upload_transfer(fields, np.ones((512, 4), np.float32))
+            points = rng.uniform(-1.5, 1.5, (256, 3)).astype(np.float32)
+            relative = volume.positions[None, :, :3].astype(float)-points[:, None, :].astype(float)
+            relative -= np.round(relative/3)*3
+            distances = np.linalg.norm(relative, axis=2)
+            nearest = np.argsort(distances, axis=1)[:, :9]
+            d = np.take_along_axis(distances, nearest, axis=1)
+            weights = (d[:, :1]/d-d[:, :1]/d[:, -1:])**2
+            expected = (fields[nearest]*weights[:, :, None]).sum(axis=1)/weights.sum(axis=1)[:, None]
+            np.testing.assert_allclose(volume.sample_fields(points), expected, atol=4e-6, rtol=3e-5)
+            np.testing.assert_array_equal(volume.sample_fields(volume.positions[:, :3]), fields)
+        finally:
+            volume.close(); owner.close()
+
+    def test_nonfinite_and_hidden_colours_do_not_contaminate_interpolation(self):
+        fields = np.zeros((27, 2), np.float32)
+        fields[:, 0] = np.nan
+        fields[13] = [.75, .5]
+        self.volume.upload_transfer(fields, np.ones((512, 4), np.float32))
+        sample = self.volume.sample_fields(np.array([[.1, .05, -.05]], np.float32))[0]
+        self.assertAlmostEqual(float(sample[0]), .75, places=6)
+        self.assertGreater(float(sample[1]), 0)
+        fields[13, 1] = -1
+        with self.assertRaisesRegex(ValueError, "nonnegative"):
+            self.volume.upload_transfer(fields, np.ones((512, 4), np.float32))
 
     def test_front_to_back_order_and_antialias_sample_counts(self):
         fields = np.empty((27, 2), np.float32)
@@ -145,9 +213,14 @@ class NativeMetalTest(unittest.TestCase):
             self.assertEqual(report["snapshot_time_seconds"], 155.0146484375)
             self.assertEqual(report["scene_sha256"], self.owner.meta["sha256"])
             self.assertEqual(report["ruler_kind"], "projected")
+            self.assertEqual(report["reconstruction"], "continuous")
             params["camera"] = self.camera((1, 0, 1))
             second, _ = self.owner.render(params)
             self.assertNotEqual(first, second)
+            self.assertEqual(upload.call_count, 1)
+            params["volume"]["reconstruction"] = "piecewise_constant"
+            _, exact_report = self.owner.render(params)
+            self.assertEqual(exact_report["reconstruction"], "piecewise_constant")
             self.assertEqual(upload.call_count, 1)
             params["style"]["palette"] = "blue_red"
             self.owner.render(params)
@@ -176,6 +249,8 @@ class NativeMetalTest(unittest.TestCase):
             volume.upload_transfer(np.zeros((27, 2), np.float32), np.ones((512, 4), np.float32))
             with self.assertRaisesRegex(ValueError, "traversal failed.*2"):
                 volume.trace(self.camera(), 1, 1, 1)
+            with self.assertRaisesRegex(ValueError, "reconstruction failed"):
+                volume.sample_fields(np.array([[.1, 0, 0]], np.float32))
         finally:
             volume.close(); owner.close()
 
@@ -188,7 +263,7 @@ class NativeMetalTest(unittest.TestCase):
                   "low": .5, "high": 1.5, "palette": "copper_blue", "opacity": .5}}
         try:
             result = state.mesh_request(params)
-            self.assertEqual(result["report"]["backend"], "native_metal_voronoi_volume_v001")
+            self.assertEqual(result["report"]["backend"], "native_metal_voronoi_volume_v002")
             self.assertEqual(result["report"]["traversal_failures"], 0)
             process = state.mesh_bridge.process
             with mock.patch.object(server.session_cleanup, "archive_and_cleanup") as archive:

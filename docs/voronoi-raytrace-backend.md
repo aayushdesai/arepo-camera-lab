@@ -25,9 +25,39 @@ of the original AREPO double-precision vertices.
 Periodic generator positions and ghost-neighbour planes remain available.
 The Metal locator indexes every generator and starts each ray at the periodic
 display-box entrance. All traversed cells are available, including ones that
-make no visible contribution. Cell values are piecewise constant; no neighbour
-interpolation has been added. Four deterministic subpixel rays provide the
-high-quality image. No time-varying sampling noise is introduced.
+make no visible contribution. The **Original cell values** mode holds each
+exported field constant within its native cell. **Smooth field** interpolates
+the transformed colour scalar and display extinction using a compact Shepard
+kernel. Up to eight nearby generators have positive weights; the ninth nearest
+generator sets the zero-weight support radius. Distances use periodic minimum
+images, and neighbours are deduplicated by native cell index. A best-first walk
+along the native Voronoi graph replaces a global tree search at each sample.
+The global locator is used only to enter the mesh or sample a diagnostic point.
+
+For distances d_i, nearest distance d_min, and support radius h, weights are
+`(d_min / d_i - d_min / h)^2`, normalized by their sum. At a generator, the
+original value is returned. The kernel has nonnegative weights and does not
+overshoot the participating values. Sites enter and leave its support with zero
+weight, avoiding the ordinary nearest-cell jumps. Non-emitting or undefined
+colour samples do not contribute to colour interpolation; their zero extinction
+still participates in the transparency interpolation.
+
+This is display interpolation, not AREPO's own gradient reconstruction, exact
+Sibson natural-neighbour interpolation, or a conservative reconstruction of gas
+mass. It is not guaranteed to preserve a sharp shock. Original cell values remain
+available, and older saved volume presets keep that original mode. A smoother
+image is not evidence of better physical resolution. Cell sizes must be
+interpreted using the particular simulation's actual refinement/derefinement
+rules, not an assumed uniform mass per cell or a density-only size law. See the
+[checked refinement context for these two scenes](run-refinement-context.md).
+
+High quality uses four deterministic subpixel rays and two ordered quadrature
+samples per crossed cell. Fast interaction uses one of each. No time-varying
+sampling noise or post-render image blur is introduced.
+
+Gas density is the exported mass density in g cm^-3, decoded as
+`10**(stored_density - 10)` for these cgs v052 scenes. The previous "density
+proxy" label was incorrect; density-based display opacity is a separate choice.
 
 Fields use the existing 24-channel implementation and restricted formula
 language. Sidecars join by uint64 particle ID. Non-finite formula values are
@@ -39,7 +69,9 @@ the native cell index and serialize particle IDs as strings for JavaScript.
 The transfer is an illustrative display model, not a calibrated synthetic
 observation or the production ArepoRT optical model. Field colour and density
 transparency are independent. Values outside the chosen field range contribute
-no emission or extinction. For each visible native-cell segment:
+no emission or extinction at their generators. The original-cell mode uses
+this transfer for each segment. The smooth mode interpolates the resulting
+coefficient and transformed colour scalar, softening visibility boundaries too:
 
 ```text
 tau = -ln(max(1 - opacity, 0.001))
@@ -129,7 +161,8 @@ is ready. Volume-only use creates no VTK/OpenGL window.
 `capture-mesh` consumes a hash-bound JSON config. Set each frame's
 `parameters.representation` to `volume` or `faces` (the API default remains
 `faces` for existing callers). Volume settings live under `parameters.volume`;
-`subpixel_samples` is 1 or 4. See the [volume example](../examples/native-volume-capture.example.json)
+`volume.reconstruction` is `continuous` or `piecewise_constant`.
+`subpixel_samples` is 1 or 4 and `cell_samples` is 1 or 2 for interpolation. See the [volume example](../examples/native-volume-capture.example.json)
 and [face example](../examples/native-capture.example.json).
 
 Each frame can use a normalized camera or an existing physical camera pose.
@@ -160,8 +193,8 @@ No raw snapshot reads or scientific production jobs were moved onto the Mac.
 ## Relationship to AREPO-VTK
 
 [AREPO-VTK](https://github.com/dnelson/ArepoVTK) describes ray integration through
-unstructured Voronoi fields and offers reconstruction modes beyond the
-piecewise-constant mode used here. This companion consumes the complete scenes
+unstructured Voronoi fields and offers several reconstruction modes. The
+compact Shepard display interpolator here is a separate implementation. This companion consumes the complete scenes
 exported by this project's AREPO-VTK workflow; it does not port its CUDA optical
 profiles or claim the same reconstruction. VTK continues to supply the explicit
 geometry/camera/picking tools. The Metal shader is compiled from source through

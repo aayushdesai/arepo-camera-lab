@@ -358,7 +358,7 @@ def build_payload(scene: Path, header: dict, cells: np.memmap,
     outward_mass_flux = density_cgs * np.maximum(outward_axial, 0.0)
     channels = {
         "density": _channel_payload(
-            density_cgs, label="density proxy", units="g cm^-3",
+            density_cgs, label="gas density", units="g cm^-3",
             default_scale="log10"),
         "temperature": _channel_payload(
             np.asarray(cells["temperature"][selected], dtype=float),
@@ -605,8 +605,11 @@ body.capture-mode #view, body.capture-mode #meshImage { left: 0; width: 100vw; h
       <label for="volumeDensityReference">Reference density (g cm⁻³)</label><input id="volumeDensityReference" type="number" value="10000" min="1e-30" step="any">
       <label for="volumeOpacityLength">Reference path length (km)</label><input id="volumeOpacityLength" type="number" value="10000" min="1e-30" step="any">
       <label for="volumeDensityPower">Density weighting</label><input id="volumeDensityPower" type="number" value="0.5" min="0" max="2" step="0.1">
+      <label for="volumeFloorSoftening">Density threshold transition (dex)</label><input id="volumeFloorSoftening" type="number" value="1" min="0" max="4" step="0.1">
       <div class="meta">Opacity applies at this density over this path length. Longer paths make the view more transparent. These are display settings.</div>
     </details>
+    <label for="volumeReconstruction">Field reconstruction</label><select id="volumeReconstruction"><option value="continuous">Smooth field</option><option value="piecewise_constant">Original cell values</option></select>
+    <div class="meta">Smooth field interpolates between native cells. It does not add simulation resolution.</div>
     <label for="volumeQuality">Image quality</label><select id="volumeQuality"><option value="4">High · antialiased</option><option value="1">Fast</option></select>
   </div>
   <button id="meshFit">Fit visible mesh</button>

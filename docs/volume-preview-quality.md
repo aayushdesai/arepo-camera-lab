@@ -50,6 +50,43 @@ The first regression run found two fixture issues (a fake control without an
 event method and a point budget below the server minimum); both were corrected
 and the complete run passed. Native Metal checks create no OpenGL window.
 
-Full-resolution comparison captures and their inspection are the remaining
-image gate. No browser visual QA or production-movie quality claim follows from
+The full-resolution first-order captures completed at 1440 by 960 with four
+subpixel rays per pixel and zero reported traversal failures. GPU times were
+0.25 s (snapshot 31 binary), 0.54 s (snapshot 721 disk), 0.64 s (remnant close-up),
+and 0.24 s (outflow), excluding scene loading and image delivery. The images
+still show cell-scale grain. Antialiasing addresses pixel edges; it cannot remove
+jumps in the piecewise-constant field inside the volume. These captures remain
+an intermediate baseline, not an accepted movie-quality result.
+
+Continuous display-field interpolation is now being prototyped against the same
+native mesh, cameras, and transfer settings. The first global-nearest-neighbour
+prototype completed without traversal failures but took 1.24 s on M4 Pro for
+only 480 by 320 pixels and one ray per pixel. Its search cost is too high for
+the default interactive view. The native-neighbour prototype reduced that workload to 0.23 s, then rendered
+1440 by 960 at four rays per pixel in 5.24 s with zero reported traversal errors.
+These timings use one sample per cell and exclude field loading and browser IO.
+The image softens cell boundaries but retains texture. The selectable
+reconstruction, periodic-neighbour checks, and two-sample quadrature are now
+implemented. The 52-test regression passed, followed by all 12 native-volume
+checks after adding a strongly unequal-spacing fixture. That fixture verifies
+spatial interpolation independently of a density-to-cell-size law. Final
+paired image captures are pending.
+
+The user's refinement caveat is an acceptance condition: do not attribute
+remaining texture to coarse low-density cells from a constant-mass assumption.
+Trace the exported scene back to its specific run, inspect its refinement and
+derefinement configuration, and keep original-cell captures alongside the
+interpolated ones. Neither a prettier image nor smoothing proves that a feature
+is physically resolved.
+
+The density channel is the exported simulation gas mass density in g cm^-3,
+decoded as 10**(stored_density - 10). The old "density proxy" UI label was
+misleading and has been corrected to "gas density". Only the density-dependent
+transparency is an illustrative display choice; the density values are not a
+proxy. No browser visual QA or production-movie quality claim follows from
 these native previews.
+
+The checked [run-specific refinement context](run-refinement-context.md) records
+target-mass refinement plus volume and neighbour-volume limits. Interpret the
+remaining grain using those rules and actual geometry; the image alone cannot
+separate physical structure from finite-resolution texture.

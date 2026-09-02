@@ -37,6 +37,9 @@ def volume_options(params: dict) -> dict:
         raise ValueError("Volume reference density and path length must be positive")
     if not 0 <= result["density_power"] <= 2 or not 0 <= result["floor_softening_dex"] <= 4:
         raise ValueError("Volume density power must be in [0,2] and floor softening in [0,4] dex")
+    result["reconstruction"] = params.get("volume", {}).get("reconstruction", "continuous")
+    if result["reconstruction"] not in ("continuous", "piecewise_constant"):
+        raise ValueError("Volume reconstruction must be continuous or piecewise_constant")
     return result
 
 
@@ -94,8 +97,11 @@ class MetalVolume:
         self.library.av_device.restype = C.c_char_p
         self.library.av_fields.argtypes = [pointer, pointer, pointer, C.c_char_p, C.c_size_t]
         self.library.av_render.argtypes = [pointer, C.c_uint32, C.c_uint32, C.c_uint32,
-                                           C.c_uint32, pointer, pointer, pointer, pointer,
+                                           C.c_uint32, C.c_uint32, C.c_uint32,
+                                           pointer, pointer, pointer, pointer,
                                            C.c_char_p, C.c_size_t]
+        self.library.av_sample_fields.argtypes = [pointer, pointer, C.c_uint32, C.c_float,
+                                                  pointer, C.c_char_p, C.c_size_t]
         self.library.av_close.argtypes = [pointer]
         self.error = C.create_string_buffer(4096)
         n, edges = int(owner.header["num_cells"]), int(owner.header["num_edges"])
@@ -125,7 +131,7 @@ class MetalVolume:
         self.capabilities = (f"Native Metal compute\nDevice: {self.device}\n"
                              f"macOS: {platform.mac_ver()[0]}\nArchitecture: {platform.machine()}\n"
                              "Geometry: full native v052 neighbour planes\n"
-                             "Reconstruction: piecewise constant per native cell\n"
+                             "Reconstruction: continuous compact Shepard or original cell values\n"
                              "Compositing: physical segment lengths, linear-light display transfer\n"
                              "Fallback: none\n")
 
@@ -134,13 +140,36 @@ class MetalVolume:
         palette = np.ascontiguousarray(palette, dtype=np.float32)
         if fields.shape != (len(self.positions), 2) or palette.shape != (512, 4):
             raise ValueError("Native volume transfer buffer shape mismatch")
+        if not np.all(np.isfinite(fields[:, 1])) or np.any(fields[:, 1] < 0):
+            raise ValueError("Native volume extinction must be finite and nonnegative")
         if self.library.av_fields(self.handle, fields.ctypes.data, palette.ctypes.data,
                                   self.error, len(self.error)):
             raise ValueError(self.error.value.decode())
 
-    def trace(self, camera: dict, width: int, height: int, subpixels: int):
+    def sample_fields(self, points: np.ndarray) -> np.ndarray:
+        """Sample the GPU display reconstruction in normalized scene coordinates."""
+        points = np.asarray(points, dtype=np.float32)
+        if points.ndim != 2 or points.shape[1] != 3 or not 0 < len(points) <= 1000000:
+            raise ValueError("Expected between 1 and 1000000 three-dimensional sample points")
+        if not np.all(np.isfinite(points)):
+            raise ValueError("Native field sample points must be finite")
+        queries = np.zeros((len(points), 4), np.float32)
+        queries[:, :3] = points
+        result = np.empty((len(points), 2), np.float32)
+        if self.library.av_sample_fields(self.handle, queries.ctypes.data, len(points),
+                     self.box_cm/self.owner.meta["display_radius_cm"], result.ctypes.data,
+                     self.error, len(self.error)):
+            raise ValueError(self.error.value.decode())
+        if not np.all(np.isfinite(result[:, 1])) or np.any(result[:, 1] < 0):
+            raise ValueError("Native field reconstruction failed")
+        return result
+
+    def trace(self, camera: dict, width: int, height: int, subpixels: int,
+              reconstruction: str = "piecewise_constant", cell_samples: int = 1):
         if width <= 0 or height <= 0 or width > 1920 or height > 1200 or subpixels not in (1, 4):
             raise ValueError("Volume viewport must be at most 1920 by 1200 with 1 or 4 rays per pixel")
+        if reconstruction not in ("continuous", "piecewise_constant") or cell_samples not in (1, 2):
+            raise ValueError("Invalid volume reconstruction or cell sampling")
         forward, up = np.asarray(camera["forward"]), np.asarray(camera["up"])
         right = np.cross(forward, up)
         radius = self.owner.meta["display_radius_cm"]
@@ -152,7 +181,8 @@ class MetalVolume:
         pixels = np.empty((height, width, subpixels, 4), dtype=np.float32)
         stats = np.empty((height, width, subpixels, 4), dtype=np.uint32)
         gpu_seconds = C.c_double()
-        if self.library.av_render(self.handle, width, height, subpixels, 8192, uniform.ctypes.data,
+        if self.library.av_render(self.handle, width, height, subpixels, 8192,
+                                  int(reconstruction == "continuous"), cell_samples, uniform.ctypes.data,
                                   pixels.ctypes.data, stats.ctypes.data, C.byref(gpu_seconds),
                                   self.error, len(self.error)):
             raise ValueError(self.error.value.decode())
@@ -167,7 +197,9 @@ class MetalVolume:
                   "traversal_failures": 0, "max_cells_per_ray": int(stats[..., 1].max()),
                   "mean_cells_per_ray": float(stats[..., 1].mean()),
                   "zero_length_transitions": int(stats[..., 2].sum()),
-                  "subpixel_samples": subpixels}
+                  "subpixel_samples": subpixels, "reconstruction": reconstruction,
+                  "cell_samples": cell_samples if reconstruction == "continuous" else 1,
+                  "interpolation": "compact_shepard_8" if reconstruction == "continuous" else "none"}
         return pixels.mean(axis=2), report
 
     def render(self, params: dict):
@@ -186,13 +218,15 @@ class MetalVolume:
         if not math.isfinite(floor) or floor < 0 or not 0 < opacity <= 1:
             raise ValueError("Density floor must be nonnegative and opacity in (0,1]")
         options = volume_options(params)
-        key = json.dumps([style, params.get("derived_channels", []), floor, options], sort_keys=True)
+        transfer_options = {key: value for key, value in options.items() if key != "reconstruction"}
+        key = json.dumps([style, params.get("derived_channels", []), floor, transfer_options], sort_keys=True)
         if key != self.transfer_key:
             owner.progress("Updating field colours and density transparency")
             values = owner.values(style["channel"], params.get("derived_channels", []))
             scalar = transform(values, style)
             visible = np.isfinite(scalar) & (values >= low) & (values <= high)
             fields = np.zeros((len(self.positions), 2), dtype=np.float32)
+            fields[:, 0] = np.nan
             fields[owner.selected, 0] = (scalar-bounds[0]) / (bounds[1]-bounds[0])
             fields[owner.selected, 1] = extinction(owner.channels["density"], visible, floor,
                                                   opacity, owner.meta["display_radius_cm"], options)
@@ -214,7 +248,10 @@ class MetalVolume:
             camera = fit_camera(self.positions[self.visible_indices, :3], camera, width/height)
         owner.set_camera(camera)
         owner.progress("Integrating rays through native Voronoi cells on Metal")
-        pixels, stats = self.trace(owner.camera, width, height, int(params.get("subpixel_samples", 4)))
+        subpixels = int(params.get("subpixel_samples", 4))
+        pixels, stats = self.trace(owner.camera, width, height, subpixels,
+                                  options["reconstruction"],
+                                  int(params.get("cell_samples", 2 if subpixels == 4 else 1)))
         linear = np.clip(pixels[:, :, :3], 0, 1)
         srgb = np.where(linear <= .0031308, 12.92*linear, 1.055*linear**(1/2.4)-.055)
         picture = Image.fromarray(np.rint(srgb*255).astype(np.uint8))
@@ -225,9 +262,10 @@ class MetalVolume:
                   "scene_sha256": owner.meta["sha256"], "native_cell_count": int(owner.header["num_cells"]),
                   "selected_cells": int(len(self.visible_indices)), "width": width, "height": height,
                   "render_seconds": time.monotonic()-started, "setup_seconds": self.setup_seconds,
-                  "backend": "native_metal_voronoi_volume_v001", "device": self.device,
+                  "backend": "native_metal_voronoi_volume_v002", "device": self.device,
                   "representation": "volume", "density_floor": floor, "volume": options,
-                  "reconstruction": "piecewise_constant", "ruler_kind": "projected",
+                  "reconstruction_fields": ["transformed_colour_scalar", "display_extinction"],
+                  "ruler_kind": "projected",
                   "early_termination_transmittance": .001, "camera": owner.camera, "style": style}
         return output.getvalue(), report
 
