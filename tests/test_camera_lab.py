@@ -630,10 +630,11 @@ class CameraLabTest(unittest.TestCase):
             root = Path(temporary)
             outputs = root / "poses"
             outputs.mkdir()
-            (outputs / "pose.json").write_text("{}\n", encoding="utf-8")
-            cached = root / "scene.bin"
+            (outputs / "camera_pose_snapshot_0001_001.json").write_text(
+                json.dumps({"schema": "stellar_camera_keyframes_v001"}), encoding="utf-8")
+            digest = hashlib.sha256(b"verified scene").hexdigest()
+            cached = transfer.verified_cache_path("user@host:/cluster/scene.bin", digest, root)
             cached.write_bytes(b"verified scene")
-            digest = viewer.sha256(cached)
             item = cleanup.CachedInput(
                 cached, "user@host:/cluster/scene.bin", digest)
             with mock.patch.object(cleanup, "remote_sha256", return_value=digest), \
@@ -644,9 +645,9 @@ class CameraLabTest(unittest.TestCase):
             self.assertFalse(cached.exists())
             self.assertTrue(receipt.is_file())
 
-            failed = root / "failed.bin"
+            failed_digest = hashlib.sha256(b"keep me").hexdigest()
+            failed = transfer.verified_cache_path("user@host:/cluster/failed.bin", failed_digest, root)
             failed.write_bytes(b"keep me")
-            failed_digest = viewer.sha256(failed)
             with mock.patch.object(cleanup, "remote_sha256", return_value="0" * 64):
                 with self.assertRaises(ValueError):
                     cleanup.archive_and_cleanup(
@@ -706,7 +707,7 @@ class CameraLabTest(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             state = server.ViewerState(
-                cleanup_configured=True,
+                cleanup_configured=True, cleanup_grace_seconds=0.01,
                 cleanup_destination="user@host:/cluster/session/unique",
                 session_directory=root / "outputs")
             http_server = mock.Mock()
@@ -720,7 +721,7 @@ class CameraLabTest(unittest.TestCase):
             http_server.shutdown.assert_called_once_with()
 
             catalog_state = server.ViewerState(
-                cleanup_configured=True,
+                cleanup_configured=True, cleanup_grace_seconds=0.01,
                 cleanup_destination="user@host:/cluster/session/catalog",
                 catalog_path=root / "catalog.json",
                 cache_directory=root / "cache",
@@ -737,7 +738,7 @@ class CameraLabTest(unittest.TestCase):
             catalog_server.shutdown.assert_called_once_with()
 
             failed = server.ViewerState(
-                cleanup_configured=True,
+                cleanup_configured=True, cleanup_grace_seconds=0.01,
                 cleanup_destination="user@host:/cluster/session/other",
                 session_directory=root / "failed")
             failed_server = mock.Mock()

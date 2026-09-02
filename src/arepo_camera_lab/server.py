@@ -9,6 +9,7 @@ import json
 import math
 from pathlib import Path
 import threading
+import uuid
 from typing import Any
 
 from . import cleanup as session_cleanup
@@ -35,13 +36,14 @@ header { height: 104px; display: grid; grid-template-columns: 180px minmax(260px
 input, select, button { height: 38px; min-width: 0; border: 1px solid #3d4853; border-radius: 4px; background: #181f26; color: #eef3f6; padding: 0 10px; }
 button { cursor: pointer; font-weight: 650; }
 button:hover { background: #242d35; }
-#fields { grid-column: 1 / -1; }
+#fields { grid-column: 1 / -2; }
+#quit { grid-column: -2 / -1; }
 #statusBand { position: fixed; top: 104px; left: 0; right: 0; z-index: 2; height: 28px; display: grid; grid-template-columns: 1fr 220px; gap: 12px; align-items: center; padding: 4px 12px; background: rgba(8,11,14,.94); color: #a9bac5; font-size: 11px; }
 #progress { width: 100%; height: 9px; accent-color: #62a8cf; }
 iframe { position: fixed; top: 132px; left: 0; width: 100vw; height: calc(100vh - 132px); border: 0; background: #07090c; }
 #visibleData { position: fixed; right: 14px; bottom: 12px; z-index: 4; padding: 7px 10px; border: 1px solid #46535e; border-radius: 4px; background: rgba(8,11,14,.92); color: #e8f1f5; font-size: 12px; font-weight: 650; }
 #visibleData.offline { border-color: #8a4c4c; color: #ffc7c7; }
-@media (max-width: 850px) { header { height: 152px; grid-template-columns: 1fr 1fr; grid-template-rows: 38px 38px 38px; } #scene, #fields { grid-column: 1 / -1; } #statusBand { top: 152px; } iframe { top: 180px; height: calc(100vh - 180px); } }
+@media (max-width: 850px) { header { height: 196px; grid-template-columns: repeat(3,minmax(0,1fr)); grid-template-rows: repeat(4,38px); } #snapshot { grid-column: 1 / 3; grid-row: 1; } #points { grid-column: 3; grid-row: 1; } #scene { grid-column: 1 / -1; grid-row: 2; } #fields { grid-column: 1 / -1; grid-row: 3; } #load { grid-column: 1; grid-row: 4; } #archive { grid-column: 2; grid-row: 4; } #quit { grid-column: 3; grid-row: 4; } #statusBand { top: 196px; } iframe { top: 224px; height: calc(100vh - 224px); } }
 </style>
 </head>
 <body>
@@ -52,24 +54,79 @@ iframe { position: fixed; top: 132px; left: 0; width: 100vw; height: calc(100vh 
   <button id="load">Load selected</button>
   <button id="archive" title="Checksum-upload pose outputs, verify cluster sources, remove local cache, and stop the server" disabled>Archive &amp; close</button>
   <input id="fields" aria-label="Loaded physical-field sidecar path" readonly placeholder="verified physical-field sidecar path appears here">
+  <button id="quit" title="Stop the local server and retain files, caches, and browser drafts">Quit</button>
 </header>
 <div id="statusBand"><span id="status">Loading the verified snapshot catalog...</span><progress id="progress" max="1" value="0"></progress></div>
 <iframe id="viewer" title="Interactive AREPO camera viewer" src="/viewer"></iframe>
 <div id="visibleData" class="offline">VISIBLE DATA: NOT LOADED</div>
 <script>
-const scene=document.getElementById('scene'),fields=document.getElementById('fields'),snapshot=document.getElementById('snapshot'),points=document.getElementById('points'),status=document.getElementById('status'),progress=document.getElementById('progress'),frame=document.getElementById('viewer'),load=document.getElementById('load'),archive=document.getElementById('archive'),visibleData=document.getElementById('visibleData');
+const scene=document.getElementById('scene'),fields=document.getElementById('fields'),snapshot=document.getElementById('snapshot'),points=document.getElementById('points'),status=document.getElementById('status'),progress=document.getElementById('progress'),frame=document.getElementById('viewer'),load=document.getElementById('load'),archive=document.getElementById('archive'),quit=document.getElementById('quit'),visibleData=document.getElementById('visibleData');
 const LAST_STATUS='arepo_camera_lab_last_server_status_v001';
-let displayedRevision=-1,selectionDirty=false,pointsDirty=false;
+let displayedRevision=-1,selectionDirty=false,pointsDirty=false,refreshing=false,starting=false,closing=false,closed=false,completedArchive=null,acknowledging=false,actionError=null;
 function remember(data){try{sessionStorage.setItem(LAST_STATUS,JSON.stringify(data));}catch(error){}}
 function lastStatus(){try{return JSON.parse(sessionStorage.getItem(LAST_STATUS)||'null');}catch(error){return null;}}
-function showVisible(data){const index=data.snapshot??'UNKNOWN';visibleData.textContent=`VISIBLE DATA: AREPO SNAPSHOT ${index} | ${Number(data.point_count).toLocaleString()} CELLS`;visibleData.classList.remove('offline');}
+function showVisible(data){visibleData.textContent=`VISIBLE DATA: AREPO SNAPSHOT ${data.snapshot??'UNKNOWN'} | ${Number(data.point_count).toLocaleString()} CELLS`;visibleData.classList.remove('offline');}
+function freeze(value){frame.inert=value;frame.style.pointerEvents=value?'none':'';}
+function showClosed(){
+  closed=true;clearInterval(poller);freeze(true);load.disabled=true;snapshot.disabled=true;archive.disabled=true;quit.disabled=false;quit.textContent='Close tab';
+  visibleData.classList.remove('offline');visibleData.textContent='LOCAL SERVER STOPPED';
+  status.textContent=completedArchive?`Archive complete; local server stopped. Receipt: ${completedArchive.cleanup_receipt}. You can close this tab.`:'Local server stopped. Files, caches, and browser drafts are retained. You can close this tab.';
+  if(completedArchive)progress.value=1;
+  try{window.close();}catch(error){}
+}
 async function loadCatalog(){try{const response=await fetch('/api/catalog',{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);const data=await response.json();snapshot.replaceChildren();for(const entry of data.frames){const option=document.createElement('option');option.value=entry.snapshot;option.textContent=`${entry.snapshot} | ${entry.label}`;option.dataset.scene=entry.scene_source;option.dataset.fields=entry.field_sidecar_source;snapshot.appendChild(option);}snapshot.disabled=data.frames.length===0;load.disabled=data.frames.length===0;if(data.frames.length===0)status.textContent='No verified snapshot catalog is configured.';}catch(error){snapshot.disabled=true;load.disabled=true;}}
-async function refresh(){try{const response=await fetch('/api/status',{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);const data=await response.json();load.disabled=Boolean(data.loading)||Boolean(data.cleanup_running)||snapshot.options.length===0;snapshot.disabled=Boolean(data.loading)||Boolean(data.cleanup_running)||snapshot.options.length===0;archive.disabled=!data.cleanup_configured||Boolean(data.loading)||Boolean(data.cleanup_running);progress.value=data.progress??0;if(data.cleanup_running){status.textContent=data.message||'Verifying and archiving the camera-lab session...';return;}if(data.cleanup_error){status.textContent='Archive failed; local data retained: '+data.cleanup_error;return;}if(data.loading){if(data.requested_snapshot!=null)snapshot.value=String(data.requested_snapshot);status.textContent=`${data.message} (${Math.round((data.progress??0)*100)}%) | visible snapshot remains ${data.snapshot??'none'}`;return;}if(data.error){snapshot.disabled=snapshot.options.length===0;status.textContent='Load failed: '+data.error;return;}if(data.loaded){const revisionChanged=data.revision!==displayedRevision;scene.value=data.scene_path;fields.value=data.field_sidecar_path??'';if(revisionChanged||!selectionDirty)snapshot.value=String(data.snapshot??'');if(revisionChanged||!pointsDirty)points.value=data.requested_points===0?0:data.requested_points;status.textContent=`Ready: ${data.point_count.toLocaleString()} of ${data.num_cells.toLocaleString()} cells from AREPO snapshot ${data.snapshot??'unknown'} | ${data.scene_path}`;progress.value=1;showVisible(data);remember(data);if(revisionChanged){displayedRevision=data.revision;selectionDirty=false;pointsDirty=false;frame.src='/viewer?revision='+data.revision;}}}catch(error){const previous=lastStatus();if(previous&&previous.loaded){scene.value=previous.scene_path??'';fields.value=previous.field_sidecar_path??'';}load.disabled=true;snapshot.disabled=true;archive.disabled=true;visibleData.classList.add('offline');visibleData.textContent=previous&&previous.loaded?`SERVER OFFLINE | LAST VISIBLE SNAPSHOT ${previous.snapshot??'UNKNOWN'}`:'LOCAL SERVER OFFLINE | VISIBLE DATA UNKNOWN';status.textContent=`Local camera-lab server unavailable. This control page must be opened from http://127.0.0.1, not as a file. Start 'arepo-camera-lab serve ...', open the printed URL, and refresh. (${error.message})`;}}
+async function refresh(){
+  if(refreshing||closed)return;refreshing=true;
+  try{
+    const response=await fetch('/api/status',{cache:'no-store'});if(!response.ok)throw new Error(`HTTP ${response.status}`);const data=await response.json();
+    load.disabled=Boolean(data.loading)||Boolean(data.cleanup_running)||starting||closing||snapshot.options.length===0;
+    snapshot.disabled=Boolean(data.loading)||Boolean(data.cleanup_running)||starting||closing||snapshot.options.length===0;
+    archive.disabled=!data.cleanup_configured||Boolean(data.loading)||Boolean(data.cleanup_running)||starting||closing;
+    quit.disabled=Boolean(data.cleanup_running)||starting||closing;
+    archive.title=data.cleanup_configured?'Save browser review, verify the archive, clear matching caches, and stop the server':'Archive destination is not configured. Set --sync-back-destination or archive_settings.json. Quit stops the server locally.';
+    if(data.cleanup_state==='complete'){
+      completedArchive=data;closing=true;freeze(true);progress.value=1;status.textContent=`Archive verified. Closing local server. Receipt: ${data.cleanup_receipt}`;
+      if(!acknowledging){acknowledging=true;try{await fetch('/api/shutdown/ack',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({archive_id:data.archive_id})});}catch(error){}finally{acknowledging=false;}}
+      return;
+    }
+    if(closing||data.quitting){closing=true;freeze(true);status.textContent='Closing the local server...';return;}
+    if(starting)return;
+    if(actionError&&!data.cleanup_running){freeze(false);status.textContent=actionError;return;}
+    freeze(Boolean(data.cleanup_running));
+    if(data.cleanup_running){progress.value=data.cleanup_progress??0;status.textContent=data.message;return;}
+    if(data.cleanup_error){status.textContent='Archive failed; local data retained: '+data.cleanup_error;return;}
+    progress.value=data.progress??0;
+    if(data.loading){if(data.requested_snapshot!=null)snapshot.value=String(data.requested_snapshot);status.textContent=`${data.message} (${Math.round((data.progress??0)*100)}%) | visible snapshot remains ${data.snapshot??'none'}`;return;}
+    if(data.error){status.textContent='Load failed: '+data.error;return;}
+    if(data.loaded){const revisionChanged=data.revision!==displayedRevision;scene.value=data.scene_path;fields.value=data.field_sidecar_path??'';if(revisionChanged||!selectionDirty)snapshot.value=String(data.snapshot??'');if(revisionChanged||!pointsDirty)points.value=data.requested_points;status.textContent=`Ready: ${data.point_count.toLocaleString()} of ${data.num_cells.toLocaleString()} cells from AREPO snapshot ${data.snapshot??'unknown'} | ${data.scene_path}`;progress.value=1;showVisible(data);remember(data);if(revisionChanged){displayedRevision=data.revision;selectionDirty=false;pointsDirty=false;frame.src='/viewer?revision='+data.revision;}}
+  }catch(error){
+    if(closing||completedArchive){showClosed();return;}
+    const previous=lastStatus();if(previous?.loaded){scene.value=previous.scene_path??'';fields.value=previous.field_sidecar_path??'';}
+    load.disabled=true;snapshot.disabled=true;archive.disabled=true;quit.disabled=true;visibleData.classList.add('offline');visibleData.textContent=previous?.loaded?`SERVER OFFLINE | LAST VISIBLE SNAPSHOT ${previous.snapshot??'UNKNOWN'}`:'LOCAL SERVER OFFLINE';
+    status.textContent=starting?'Server connection lost; archive outcome is not yet confirmed. Check the session receipt before removing any cache.':`Local camera-lab server unavailable. Open the URL printed by 'arepo-camera-lab serve ...'. (${error.message})`;
+  }finally{refreshing=false;}
+}
 snapshot.onchange=()=>{selectionDirty=true;status.textContent=`Selected AREPO snapshot ${snapshot.value}; press Load selected.`;};
 points.oninput=()=>{pointsDirty=true;};
-load.onclick=async()=>{if(snapshot.value==='')return;const requestedSnapshot=snapshot.value;load.disabled=true;snapshot.disabled=true;selectionDirty=true;pointsDirty=true;status.textContent=`Queueing verified AREPO snapshot ${requestedSnapshot}...`;progress.value=0;try{const response=await fetch('/api/load',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({snapshot:+requestedSnapshot,max_points:+points.value})}),data=await response.json();if(!response.ok)throw new Error(data.error||'load failed');}catch(error){status.textContent='Load failed: '+error.message;load.disabled=false;snapshot.disabled=false;selectionDirty=true;}};
-archive.onclick=async()=>{archive.disabled=true;load.disabled=true;status.textContent='Verifying cluster sources and archiving session outputs...';try{const response=await fetch('/api/shutdown',{method:'POST'}),data=await response.json();if(!response.ok)throw new Error(data.error||`HTTP ${response.status}`);}catch(error){status.textContent=`Could not start archive: ${error.message}`;archive.disabled=false;}};
-loadCatalog().then(refresh);setInterval(refresh,400);
+load.onclick=async()=>{if(snapshot.value==='')return;const requestedSnapshot=snapshot.value;load.disabled=true;snapshot.disabled=true;selectionDirty=true;pointsDirty=true;status.textContent=`Queueing verified AREPO snapshot ${requestedSnapshot}...`;progress.value=0;try{const response=await fetch('/api/load',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({snapshot:+requestedSnapshot,max_points:+points.value})}),data=await response.json();if(!response.ok)throw new Error(data.error||'load failed');}catch(error){status.textContent='Load failed: '+error.message;load.disabled=false;snapshot.disabled=false;}};
+archive.onclick=async()=>{
+  actionError=null;starting=true;archive.disabled=true;quit.disabled=true;load.disabled=true;snapshot.disabled=true;freeze(true);status.textContent='Saving the browser review and starting the archive...';
+  try{
+    const getSession=frame.contentWindow?.cameraLabSessionState;
+    if(displayedRevision>=0&&typeof getSession!=='function')throw new Error('The viewer is not ready to save its review yet. Wait for it to load, then retry.');
+    const browserSession=typeof getSession==='function'?getSession():null;
+    const response=await fetch('/api/shutdown',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({browser_session:browserSession})}),data=await response.json();
+    if(!response.ok)throw new Error(data.error||`HTTP ${response.status}`);
+  }catch(error){actionError=`Could not start archive: ${error.message}`;status.textContent=actionError;freeze(false);}
+  finally{starting=false;}
+};
+quit.onclick=async()=>{
+  if(closed){window.close();status.textContent+=' If the browser keeps this tab open, close it with the browser controls.';return;}
+  actionError=null;quit.disabled=true;
+  try{const response=await fetch('/api/quit',{method:'POST'}),data=await response.json();if(!response.ok)throw new Error(data.error||`HTTP ${response.status}`);closing=true;freeze(true);status.textContent='Closing the local server; files and browser drafts are retained...';}
+  catch(error){actionError=`Could not stop the server: ${error.message}`;status.textContent=actionError;quit.disabled=false;}
+};
+const poller=setInterval(refresh,400);loadCatalog().then(refresh);
 </script>
 </body>
 </html>'''
@@ -81,7 +138,7 @@ class ViewerState:
     html: str | None = None
     scene_path: Path | None = None
     field_sidecar_path: Path | None = None
-    lock: threading.Lock = field(default_factory=threading.Lock)
+    lock: threading.RLock = field(default_factory=threading.RLock)
     progress: dict[str, Any] = field(default_factory=lambda: {
         "loaded": False, "loading": False, "progress": 0.0,
         "message": "Waiting for a scene", "error": None, "revision": 0})
@@ -97,6 +154,11 @@ class ViewerState:
     cleanup_destination: str | None = None
     cleanup_worker: threading.Thread | None = None
     cleanup_receipt: Path | None = None
+    cleanup_state: str = "idle"
+    archive_id: str | None = None
+    cleanup_ack: threading.Event = field(default_factory=threading.Event)
+    cleanup_grace_seconds: float = 5.0
+    quitting: bool = False
     review_bundle: dict[str, Any] | None = None
     requested_pose_id: str | None = None
 
@@ -183,6 +245,7 @@ class ViewerState:
             if not field_sidecar_path.is_file():
                 raise ValueError(f"field sidecar does not exist: {field_sidecar_path}")
         with self.lock:
+            self._ensure_writable()
             if self.progress.get("loading"):
                 raise ValueError("another scene load is already in progress")
             self.progress.update({"loading": True, "progress": 0.0,
@@ -210,6 +273,7 @@ class ViewerState:
         except KeyError as error:
             raise ValueError(f"snapshot {snapshot} is not in the verified catalog") from error
         with self.lock:
+            self._ensure_writable()
             if self.progress.get("loading"):
                 raise ValueError("another scene load is already in progress")
             self.progress.update({
@@ -263,8 +327,10 @@ class ViewerState:
         with self.lock:
             result = dict(self.progress)
             result["cleanup_configured"] = self.cleanup_configured
-            result["cleanup_running"] = bool(
-                self.cleanup_worker is not None and self.cleanup_worker.is_alive())
+            result["cleanup_running"] = self.cleanup_state == "running"
+            result["cleanup_state"] = self.cleanup_state
+            result["archive_id"] = self.archive_id
+            result["quitting"] = self.quitting
             result["cleanup_receipt"] = str(self.cleanup_receipt) \
                 if self.cleanup_receipt is not None else None
             result["session_directory"] = str(self.session_directory)
@@ -281,50 +347,95 @@ class ViewerState:
                 })
             return result
 
-    def start_cleanup(self, http_server: Any) -> dict[str, Any]:
-        if not self.cleanup_configured or self.cleanup_destination is None:
-            raise ValueError(
-                "restart the server with --cleanup-on-close and a unique "
-                "--sync-back-destination")
+    def _ensure_writable(self) -> None:
+        if self.cleanup_state in ("running", "complete") or self.quitting:
+            raise ValueError("the session is closing; editing and loading are paused")
+
+    def save_browser_session(self, payload: dict[str, Any]) -> Path:
         with self.lock:
+            self._ensure_writable()
+            if payload.get("schema") != "arepo_camera_lab_browser_session_v001":
+                raise ValueError("invalid browser session schema")
+            if self.payload is None or payload.get("visible_scene", {}).get("sha256") != self.payload["scene"]["sha256"]:
+                raise ValueError("browser session does not match the visible scene")
+            if payload.get("visible_scene", {}).get("snapshot") != self.payload["scene"]["snapshot"]:
+                raise ValueError("browser session snapshot does not match visible cells")
+            if self.review_bundle is not None:
+                normalized = review.normalize_bundle(payload["review_bundle"])
+                if normalized["geometry_fingerprint_sha256"] != self.review_bundle["geometry_fingerprint_sha256"]:
+                    raise ValueError("browser session changed immutable camera geometry")
+            self.session_directory.mkdir(parents=True, exist_ok=True)
+            path = self.session_directory / f"camera_lab_session_{uuid.uuid4().hex}.json"
+            with path.open("x", encoding="utf-8") as handle:
+                json.dump(payload, handle, indent=2, allow_nan=False)
+                handle.write("\n")
+            return path
+
+    def start_cleanup(self, http_server: Any,
+                      browser_session: dict[str, Any] | None = None) -> dict[str, Any]:
+        if not self.cleanup_configured or self.cleanup_destination is None:
+            raise ValueError("configure --sync-back-destination or archive_settings.json; Quit works locally without an archive")
+        with self.lock:
+            if self.cleanup_state in ("running", "complete"):
+                return {"status": "archive_started", "archive_id": self.archive_id}
+            self._ensure_writable()
             if self.progress.get("loading"):
                 raise ValueError("wait for the current scene load before archiving")
-            if self.cleanup_worker is not None and self.cleanup_worker.is_alive():
-                raise ValueError("archive and cleanup is already running")
-            self.progress.update({
-                "cleanup_running": True, "cleanup_error": None,
-                "message": "Verifying and archiving the camera-lab session",
-            })
-            cached_inputs = (session_cleanup.catalog_cached_inputs(
-                self.catalog_path, self.cache_directory)
-                if self.catalog_path is not None else
-                list(self.cached_inputs.values()))
+            if browser_session is not None:
+                self.save_browser_session(browser_session)
+            self.cleanup_state = "running"
+            self.archive_id = uuid.uuid4().hex
+            self.cleanup_ack.clear()
+            self.progress.update({"cleanup_error": None, "cleanup_progress": 0.0,
+                                  "message": "Verifying and archiving the camera-lab session"})
+            started = {"status": "archive_started", "archive_id": self.archive_id}
+
+        def report(value: float, message: str) -> None:
+            with self.lock:
+                self.progress.update({"cleanup_progress": value, "message": message})
 
         def work() -> None:
             try:
+                cached_inputs = (session_cleanup.catalog_cached_inputs(
+                    self.catalog_path, self.cache_directory)
+                    if self.catalog_path is not None else list(self.cached_inputs.values()))
                 receipt = session_cleanup.archive_and_cleanup(
                     self.session_directory, self.cleanup_destination,
-                    cached_inputs)
+                    cached_inputs, progress=report)
             except Exception as error:
                 with self.lock:
-                    self.progress.update({
-                        "cleanup_running": False,
-                        "cleanup_error": str(error),
-                        "message": "Archive failed; server and local cache remain available",
-                    })
+                    self.cleanup_state = "failed"
+                    self.progress.update({"cleanup_error": str(error),
+                                          "message": "Archive failed; server and local data remain available"})
                 return
             with self.lock:
                 self.cleanup_receipt = receipt
-                self.progress.update({
-                    "cleanup_running": False, "cleanup_error": None,
-                    "message": f"Archive verified: {receipt.name}; stopping server",
-                })
+                self.cleanup_state = "complete"
+                self.progress.update({"cleanup_error": None, "cleanup_progress": 1.0,
+                                      "message": f"Archive complete: {receipt}"})
+            # Give the browser the verified receipt before closing its status API.
+            # A closed tab never prevents the independent archive worker finishing.
+            self.cleanup_ack.wait(self.cleanup_grace_seconds)
             http_server.shutdown()
 
         self.cleanup_worker = threading.Thread(
             target=work, name="arepo-camera-archive-cleanup", daemon=False)
         self.cleanup_worker.start()
-        return {"status": "archive_started", "cached_inputs": len(cached_inputs)}
+        return started
+
+    def acknowledge_cleanup(self, archive_id: str) -> None:
+        with self.lock:
+            if self.cleanup_state != "complete" or archive_id != self.archive_id:
+                raise ValueError("no matching completed archive to acknowledge")
+            self.cleanup_ack.set()
+
+    def start_quit(self) -> dict[str, str]:
+        with self.lock:
+            if self.cleanup_state == "running":
+                raise ValueError("archive is still running; wait for its verification result")
+            self.quitting = True
+            return {"status": "server_stopping"}
+
 
     def catalog_payload(self) -> dict[str, Any]:
         if self.catalog is None:
@@ -332,6 +443,11 @@ class ViewerState:
         return self.catalog.public_payload()
 
     def save_pose(self, pose: dict[str, Any]) -> Path:
+        with self.lock:
+            self._ensure_writable()
+            return self._save_pose(pose)
+
+    def _save_pose(self, pose: dict[str, Any]) -> Path:
         with self.lock:
             if self.payload is None:
                 raise ValueError("no scene is loaded")
@@ -370,6 +486,11 @@ class ViewerState:
         raise FileExistsError("camera-pose numbering is exhausted")
 
     def save_review_bundle(self, payload: dict[str, Any]) -> Path:
+        with self.lock:
+            self._ensure_writable()
+            return self._save_review_bundle(payload)
+
+    def _save_review_bundle(self, payload: dict[str, Any]) -> Path:
         if self.review_bundle is None:
             raise ValueError("restart the server with --pose-bundle before saving reviews")
         normalized = review.normalize_bundle(payload)
@@ -427,15 +548,33 @@ def _handler(state: ViewerState) -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:  # noqa: N802
             if self.path not in ("/api/load", "/api/pose", "/api/review-bundle",
-                                 "/api/shutdown"):
+                                 "/api/shutdown", "/api/shutdown/ack", "/api/quit"):
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
                 return
             try:
-                if self.path == "/api/shutdown":
-                    result = state.start_cleanup(self.server)
+                if self.path == "/api/quit":
+                    result = state.start_quit()
                     self._json(HTTPStatus.ACCEPTED, result)
+                    threading.Thread(target=self.server.shutdown,
+                                     name="arepo-camera-quit", daemon=False).start()
                     return
                 length = int(self.headers.get("Content-Length", "0"))
+                if self.path in ("/api/shutdown", "/api/shutdown/ack"):
+                    if length < 0 or length > 10_000_000:
+                        raise ValueError("invalid request size")
+                    request = json.loads(self.rfile.read(length)) if length else {}
+                    if not isinstance(request, dict):
+                        raise ValueError("request body must be a JSON object")
+                    if self.path == "/api/shutdown/ack":
+                        archive_id = request.get("archive_id")
+                        if state.cleanup_state != "complete" or archive_id != state.archive_id:
+                            raise ValueError("no matching completed archive")
+                        self._json(HTTPStatus.OK, {"status": "server_stopping"})
+                        state.acknowledge_cleanup(archive_id)
+                    else:
+                        result = state.start_cleanup(self.server, request.get("browser_session"))
+                        self._json(HTTPStatus.ACCEPTED, result)
+                    return
                 if length <= 0 or length > 10_000_000:
                     raise ValueError("invalid request size")
                 request = json.loads(self.rfile.read(length))

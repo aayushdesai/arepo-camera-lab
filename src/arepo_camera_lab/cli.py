@@ -14,13 +14,13 @@ from . import cleanup, demo, fields, gallery, movie, orbit, render_intent, revie
 def _serve(args: argparse.Namespace) -> int:
     state = server.ViewerState()
     state.session_directory = args.session_directory.expanduser().resolve()
-    state.cleanup_configured = bool(args.cleanup_on_close)
-    state.cleanup_destination = args.sync_back_destination
-    if args.cleanup_on_close and (
-            args.catalog is None or args.sync_back_destination is None):
-        raise ValueError(
-            "serve --cleanup-on-close requires --catalog and a unique "
-            "--sync-back-destination")
+    state.cleanup_destination = (args.sync_back_destination or
+                                 cleanup.saved_destination(state.session_directory))
+    state.cleanup_configured = state.cleanup_destination is not None
+    if state.cleanup_destination is not None:
+        cleanup.split_remote(state.cleanup_destination)
+    if args.cleanup_on_close and not state.cleanup_configured:
+        raise ValueError("--cleanup-on-close requires --sync-back-destination or archive_settings.json")
     if args.catalog is not None:
         state.catalog_path = args.catalog.expanduser().resolve()
         state.catalog = scene_catalog.load_catalog(args.catalog)
@@ -52,10 +52,6 @@ def _serve(args: argparse.Namespace) -> int:
     if not args.no_browser:
         webbrowser.open(f"http://127.0.0.1:{args.port}")
     server.run_server(state, args.port)
-    if args.cleanup_on_close and state.cleanup_receipt is None:
-        cleanup.archive_and_cleanup(
-            state.session_directory, args.sync_back_destination,
-            list(state.cached_inputs.values()))
     return 0
 
 
@@ -135,10 +131,10 @@ def parser() -> argparse.ArgumentParser:
         help="No-clobber server-side camera-pose output directory")
     serve.add_argument(
         "--cleanup-on-close", action="store_true",
-        help="Enable the Archive & close button and cleanup after server exit")
+        help="Enable Archive & close; Quit and Ctrl-C always stop locally without cleanup")
     serve.add_argument(
         "--sync-back-destination",
-        help="Unique no-clobber host:/path for session pose outputs")
+        help="Archive parent host:/path; each attempt creates a new no-clobber child")
     serve.add_argument("--no-browser", action="store_true")
     serve.set_defaults(function=_serve)
 

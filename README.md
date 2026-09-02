@@ -456,10 +456,35 @@ arepo-camera-lab cleanup \
   --cache-directory ~/.cache/arepo-camera-lab
 ```
 
-The server's **Archive & close** action now keeps the server alive while the
-cluster-source hashes and rsync result are verified. A failed archive is shown
-in the browser and leaves both server and cache available for retry. The server
-stops only after the archive receipt is complete.
+The server has separate **Quit** and **Archive & close** actions. **Quit** (or
+Ctrl-C) stops the local Python server immediately, retaining files and browser
+drafts. It never contacts the cluster.
+
+**Archive & close** saves a separate browser-session record containing all camera
+alternatives, named styles, per-pose drafts, formulas, and the current view. It
+then checks the cluster copies of the managed caches, rsyncs only recognized
+camera/session/review products, verifies the transfer, and removes the unchanged
+content-addressed cache files. Camera bundles and unrelated local files remain.
+Progress and failures stay visible. The browser acknowledges the completion
+receipt before shutdown; a closed browser cannot prevent the worker finishing.
+After the server stops, the page attempts to close automatically. If the browser
+keeps the tab open, **Close tab** or the browser controls close it.
+
+Supplying `--sync-back-destination user@login:/archive/parent` enables the archive
+button without also requiring `--cleanup-on-close`. Every attempt creates a fresh
+`archive_<timestamp>_<id>` child, so failed attempts remain available and retries
+do not collide. A session can retain its destination in `archive_settings.json`:
+
+```json
+{
+  "schema": "arepo_camera_lab_archive_settings_v001",
+  "destination": "user@login:/archive/parent"
+}
+```
+
+The explicit command-line destination takes precedence over saved settings.
+Completed and failed staging records are preserved under the session's
+`.archives` directory; completion receipts remain at the session root.
 
 The native VTK command can perform the same operation when its window closes by
 adding `--cleanup-on-close --sync-back-destination user@login:/unique/path` and

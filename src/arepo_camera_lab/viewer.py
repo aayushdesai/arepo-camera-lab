@@ -904,6 +904,15 @@ function savePresetRevision(){if(!reviewBundle||!activePose)throw new Error('Loa
 function addBinding(target,preset,state){const visual=cloned(state);visual.scene_sha256=target.scene_sha256;visual.field_sidecar_sha256=reviewSidecars[String(target.snapshot)]??null;const binding={schema:'stellar_camera_pose_style_binding_v001',binding_id:uniqueId('binding'),pose_id:target.pose_id,preset_id:preset.preset_id,channel:visual.channel,created_at:new Date().toISOString(),visual_state:visual};reviewBundle.pose_style_bindings.push(binding);delete reviewDrafts[target.pose_id];return binding;}
 function bindPreset(targets,useCurrentOverride=false){if(!activePose||targets.some(target=>!target))throw new Error('Select an immutable pose first.');const preset=selectedPreset();if(!preset)throw new Error('Copy the current style as a named preset revision first.');const current=useCurrentOverride?visualState(activePose):preset.visual_state;for(const target of targets)addBinding(target,preset,current);persistReview();styleDirty=Boolean(reviewDrafts[activePose?.pose_id]);updateReviewReadout();return targets.length;}
 function downloadReview(){if(!reviewBundle)throw new Error('No reviewed bundle is loaded.');const blob=new Blob([JSON.stringify(reviewBundle,null,2)+'\n'],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='stellar_camera_review_bundle_v002.json';a.click();URL.revokeObjectURL(a.href);}
+// Snapshot browser review/draft state before the archive freezes edits.
+window.cameraLabSessionState=()=>({
+  schema:'arepo_camera_lab_browser_session_v001',
+  visible_scene:{snapshot:DATA.scene.snapshot,sha256:DATA.scene.sha256},
+  review_bundle:cloned(reviewBundle),review_drafts:cloned(reviewDrafts),
+  derived_channels:cloned(derivedDefinitions),active_pose_id:activePose?.pose_id??null,
+  current_camera:activePose&&cameraExact?cloned(activePose):pose(),
+  current_visual_state:activePose?visualState(activePose):null
+});
 rebuildPoseMenu();rebuildPresetMenu('');
 reviewPose.onchange=()=>activatePoseId(reviewPose.value).catch(error=>statusText.textContent=error.message);
 previousPoseButton.onclick=()=>{if(!activePose&&alternatives.length)return activatePoseId(alternatives[0].pose_id);const index=alternatives.findIndex(row=>row.pose_id===activePose.pose_id);activatePoseId(alternatives[(index-1+alternatives.length)%alternatives.length].pose_id).catch(error=>statusText.textContent=error.message);};
