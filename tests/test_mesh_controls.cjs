@@ -106,6 +106,16 @@ vm.runInContext(fs.readFileSync(path.join(directory, 'mesh_viewer.js'), 'utf8'),
     assert.equal(meshParameters().width,480);
     nativeInteractiveUntil=0;
     assert.equal(meshParameters().subpixel_samples,4);
+    // A low-resolution fit completing after interaction ends must still refine.
+    meshFitRequested=true;noteNativeInteraction();holdResponse=true;
+    const beforeFit=requests,fitPending=requestNativeFrame(true);
+    nativeInteractiveUntil=0;releaseResponse();await fitPending;holdResponse=false;
+    assert.equal(meshLastReport.width,480);
+    assert.notEqual(meshLastKey,meshKey(meshParameters()));
+    await requestNativeFrame();
+    assert.equal(requests,beforeFit+2);
+    assert.equal(meshLastReport.width,canvas.width);
+    assert.equal(meshLastReport.subpixel_samples,4);
     volumeFloorSoftening.value='0.3';
     const volumeSaved=meshViewState();volumeDensityReference.value='1e9';applyMeshViewState(volumeSaved);
     assert.equal(volumeDensityReference.value,'10000');

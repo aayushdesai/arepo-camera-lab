@@ -54,7 +54,7 @@ async function requestNativeFrame(force=false){
       meshImage.src='data:image/png;base64,'+result.png;await meshImage.decode();
       if(sequence!==meshRequestSequence||renderMode.value!==requestedMode)return;
       meshImage.style.display='block';meshLastKey=key;meshDisplayedCamera={...result.report.camera,...cleanBasis(result.report.camera.forward,result.report.camera.up)};meshLastReport=result.report;
-      if(params.fit_visible){meshFitRequested=false;setCamera(meshDisplayedCamera);meshLastKey=meshKey(meshParameters());}
+      if(params.fit_visible){meshFitRequested=false;setCamera(meshDisplayedCamera);meshLastKey=meshKey({...params,camera:meshParameters().camera,fit_visible:false});}
       const r=result.report,method=r.representation==='volume'?`Metal volume · ${{linear:'linear field',continuous:'legacy smoothing',piecewise_constant:'original cells'}[r.reconstruction]||r.reconstruction} · ${r.subpixel_samples} rays/pixel`:`${r.faces.toLocaleString()} native faces`;meshNotice.textContent=`${r.selected_cells.toLocaleString()} / ${r.native_cell_count.toLocaleString()} visible cells · ${method} · ${r.render_seconds.toFixed(2)} s`;
       if(r.empty_native_faces)meshNotice.textContent+=` · ${r.empty_native_faces} zero-area native faces`;
     }catch(error){meshFailureKey=key;meshNotice.textContent='Mesh view: '+error.message;}

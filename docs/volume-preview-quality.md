@@ -109,6 +109,14 @@ local no-overshoot bounds, hidden non-finite fields, and reported gradient
 fallbacks. All 56 software regression checks passed on the M4 Pro in 6.471 s.
 Final capture packaging is in progress.
 
+The controller also had a separate resolution bug: a 480-pixel fit request
+finishing after interaction ended stored the *current* high-quality request key
+against the low-resolution image. That suppressed the subsequent sharper frame.
+A held-response regression reproduced the failure before the fix. The cache key
+now retains the completed request's resolution, quality, field and style settings,
+changing only its fitted camera and consumed fit flag. This fix addresses a
+stretched preview; it does not explain texture in the full-size capture PNGs.
+
 The user's refinement caveat is an acceptance condition: do not attribute
 remaining texture to coarse low-density cells from a constant-mass assumption.
 Trace the exported scene back to its specific run, inspect its refinement and
