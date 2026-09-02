@@ -107,12 +107,26 @@ as the interactive default; original values and legacy presets remain usable.
 The release checks add affine reproduction, strongly unequal native spacing,
 local no-overshoot bounds, hidden non-finite fields, and reported gradient
 fallbacks. All 56 software regression checks passed on the M4 Pro in 6.471 s.
-Final capture packaging is in progress.
+The v004 package is complete at
+`~/Movies/AREPO/voronoi-m4-preview-20260902-v004`, with four matched-camera
+PNGs, per-frame reports, configuration files, source/binary/input/output hashes,
+a comparison index, regression logs, and retained rejected experiments.
+The capture source commit is `a9cef721dba48f35db8c25224074bdafde33b456`.
+
+All four final PNGs decoded successfully at 1440 by 960. The 22,118,400 total
+rays reported no traversal failures and no gradient fallback cells. Camera,
+field, opacity, density support, timestamp, scale, source hashes and binary
+hashes passed the local preview checks. Final GPU times were 0.277, 0.607,
+0.719 and 0.281 s for binary, disk, remnant and outflow respectively. Total
+renderer times were 0.462, 0.805, 0.905 and 0.455 s, excluding initial scene
+loading and browser delivery. All four final images were visually inspected;
+remaining texture and loss of visible inner detail still prevent movie-quality
+acceptance. These are software/display checks, not scientific promotion.
 
 The controller also had a separate resolution bug: a 480-pixel fit request
 finishing after interaction ended stored the *current* high-quality request key
 against the low-resolution image. That suppressed the subsequent sharper frame.
-A held-response regression reproduced the failure before the fix. The cache key
+A held-response regression reproduced the failure before the fix and passed after it. The cache key
 now retains the completed request's resolution, quality, field and style settings,
 changing only its fitted camera and consumed fit flag. This fix addresses a
 stretched preview; it does not explain texture in the full-size capture PNGs.
