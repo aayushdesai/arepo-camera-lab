@@ -1,104 +1,118 @@
 # Native 3D Voronoi viewer
 
-Status: design for `feature/arepo-vtk-voronoi-m4`. The native mesh bridge and
-M4 rendering integration are not implemented yet.
+Implemented on `feature/arepo-vtk-voronoi-m4`: full native connectivity, filled
+3D cell faces, existing browser controls, simulation time, physical scale bar,
+field legend, and a two-point surface ruler. Direct raw-HDF5 loading and an M4
+emission/absorption ray tracer remain unimplemented.
 
-## Primary view
+## Geometry and fields
 
-Open an interactive, rotatable 3D view of AREPO's actual Voronoi polyhedra.
-Filled cell faces are the default representation. Keep the full cell geometry
-and native connectivity available while orbiting, panning, and zooming into the
-white dwarf, disk, and outflows. Cell-edge visibility is an optional overlay;
-a movable slice is not the primary view.
+The adapter reads complete v052 cell records, neighbour offsets, and native
+neighbour displacement vectors exported by ArepoVTK-stellar. Each displacement
+defines a Voronoi bisector. A C++17 worker intersects those planes in double
+precision to recover convex cell faces. It never tessellates the sampled point
+cloud or substitutes a slice. Displacement vectors are float32 in v052, so this
+reconstructs the exported planes; it does not claim bit-identical original
+AREPO double-precision vertices.
 
-Color cells by their physical fields. Provide adjustable opacity and field
-visibility controls to expose interior structures without making a sliced
-cross-section the viewing model. Preserve cell-centered values and stable
-particle IDs through the renderer adapter. Opaque faces naturally occlude
-interior cells; transparent rendering must handle depth ordering correctly.
-Surface opacity is a visualization control, not a physical optical depth.
+The ordinary view is the exterior boundary of selected native cells. Hidden
+interfaces are omitted while full native connectivity remains available. The
+optional interior-face view emits shared faces once, with the lower-index
+selected cell as owner. Neighbour planes, including periodic ghost planes,
+clip the geometry. Periodic cell centres are unwrapped relative to the same
+centre as the point preview. Invalid, open, or oversized geometry fails
+explicitly; there is no silent point fallback. The current vertex limit is
+30 million per request.
 
-## Data and mesh ownership
+Each polygon retains its native cell index. Physical sidecars are joined by
+uint64 particle ID; picked IDs are serialized as strings to avoid JavaScript
+integer rounding. The existing 24-channel and formula language is shared with
+the point view. Non-finite formula results are hidden. Zero-valued fields can
+load even when their usual display default is logarithmic.
 
-Use the existing AREPO-VTK snapshot reader and AREPO mesh builder. Its
-`Arepo::LoadSnapshot()` path initializes the native mesh, and `ArepoMesh` exposes
-Delaunay connectivity, circumcenters, and Voronoi faces. Adapt that topology to
-VTK polyhedral cells (`vtkUnstructuredGrid` / `vtkPolyhedron`), with physical
-fields attached to cells. VTK supplies interactive rendering, picking,
-measurement widgets, and overlays.
+Visibility combines the selected channel range with an independent density
+floor. Lower that floor to expose diffuse material. Surface opacity controls
+polygon compositing, not optical depth; it does not integrate all hidden
+interior cells. Depth peeling was exercised on the M4.
 
-Preserve face winding, cell ownership, units, and periodic/ghost-cell semantics
-in the adapter. Do not substitute a tessellation of the sampled point cloud
-for the simulation mesh. Camera movement and display changes reuse the loaded
-mesh and do not trigger reconstruction.
+## Cameras, measurements, and existing functionality
 
-## Snapshot selection
+The renderer uses the existing orthographic camera basis, centre, and physical
+screen half extent. Camera and colour changes reuse geometry; visibility
+changes reconstruct surfaces. One native request runs at a time, with a smaller
+viewport during dragging. Failed requests retain the preceding visible frame
+and show an error. Scene hashes prevent stale frames/picks being attributed to
+a different snapshot.
 
-Select any available simulation snapshot through the viewer. The application
-reads that snapshot and constructs its mesh on demand, in memory, without a
-separate user-run scene-export or sidecar-preparation step. The first load still
-requires data transfer or disk reading plus reconstruction. Retain a bounded
-cache for revisiting snapshots and make load progress and cancellation visible.
-Switch the visible snapshot and its metadata together only after a successful
-load; a failed load leaves the previous view intact.
+The bottom-right overlay is tied to the displayed frame. Time comes from the
+loaded scene's `snapshot_time_seconds`, never a camera-path row. For vertical
+half extent H, viewport aspect A, and displayed width W, the horizontal scale
+is `2 H A / W` cm per CSS pixel. A 1/2/5 scale bar updates with zoom. The ruler
+picks two native surfaces and reports their Euclidean separation in physical
+coordinates. The point renderer uses a camera-parallel plane and labels the
+result **projected**.
 
-The snapshot reader must use the simulation's explicit field and unit
-conventions, including its temperature/EOS handling. Missing physical fields
-must not be synthesized from an assumed ideal-gas conversion.
+Imported camera alternatives remain immutable. Physical channels, formulas,
+style presets/bindings, camera controls, point-mode captures, native VTK
+point/glyph mode, and verified snapshot selection remain supported. New presets
+also retain mesh visibility/edge/lighting and measurement display settings.
+Mesh preview settings do not redefine the production optical model.
 
-## Time, scale, and measurements
+The worker owns its compiler/face-builder process group. Local Quit and Ctrl-C
+terminate it without SSH. Archive & close freezes requests before stopping it
+and performs the existing verified archival workflow. Changing snapshot closes
+the old worker when the replacement scene is ready.
 
-Place the loaded snapshot's simulation time and index at the bottom right,
-alongside an adaptive physical scale bar and the active field's color legend.
-Read time from snapshot metadata with its declared unit conversion, independently
-of camera-path time.
+## Verified development results, 2026-09-02
 
-Provide a two-point ruler. Points picked on the mesh have world coordinates,
-so the ruler reports their 3D physical separation. Any screen-plane measurement
-must be labeled as a projected distance. In orthographic mode, compute the scale
-bar from the camera's physical screen extent. In perspective mode, identify the
-reference depth used for the bar. Update these overlays with zoom and snapshot
-changes and include them in captures when enabled.
+On the M4 Pro, installed VTK 9.6.2 reported:
 
-## Apple silicon execution
+```text
+OpenGL vendor string: Apple
+OpenGL renderer string: Apple M4 Pro
+OpenGL version string: 4.1 Metal - 90.5
+hardware acceleration: Yes
+```
 
-Build AREPO-VTK and its dependencies natively for arm64. Use the M4 CPU for the
-existing mesh-construction code and a supported GPU rendering backend for the
-interactive view. VTK/Metal support must be checked in the actual installed
-build; CUDA kernels do not run on Apple GPUs. Preserve robust geometry and
-required double precision when optimizing construction.
+This is VTK's OpenGL path through the macOS graphics driver. No CUDA kernels or
+new direct Metal ray tracer are used. The native C++ face builder runs on the
+CPU with eight workers by default.
 
-The inspected development machine is an M4 Pro with 48 GiB unified memory.
-Its current VTK 9.6.2 build has the OpenGL backend and lacks the WebGPU backend.
-These are development observations, not runtime capability guarantees.
+Real prepared scenes were checksum-verified for snapshots 31 (1,696,613 cells,
+155.0146484375 s) and 721 (2,582,677 cells, 3604.976133108139 s). Example
+selections produced 22,693, 38,747, and 127,691 native faces. Cached camera
+redraws at 1440 by 960 took about 0.04-0.09 s. These renderer timings exclude
+network transfer, first-load work, and browser latency.
 
-Keep direct local preview work separate from production scientific acceptance.
-Existing eta placement and provenance requirements continue to govern production
-analysis and validation.
+The 41-test local software regression run passed, including native geometry
+closure/winding/volume, shared interfaces, periodic ghost neighbours,
+ID/field binding, camera/palette redraw, transparent rendering, 3D picks,
+projected-ruler calibration, snapshot hash guards, native worker shutdown,
+and existing camera/review/catalog/movie/archive tests. Browser controller
+tests used a fake DOM/transport. Browser visual inspection was blocked by an
+admin-policy verification failure; native PNGs were visually inspected. These
+are local preview checks, not scientific promotion.
 
-## Geometry inspection and movie rendering
+## Capture contract
 
-The full 3D mesh view is the primary geometry-debugging tool. It should expose
-cell boundaries and structures hidden by the sampled point display. It does not
-increase the simulation's spatial resolution.
+`capture-mesh` consumes a JSON config with `scene_path`, `scene_sha256`,
+`snapshot`, optional `field_sidecar_path` plus `field_sidecar_sha256`, and
+`frames`. Each frame has a simple `name`, display `parameters`, and either a
+normalized `parameters.camera` or an existing `physical_camera` pose.
+`fit_visible: true` records a diagnostic framing without changing the source
+pose. See [the example](../examples/native-capture.example.json).
 
-A movie with physically meaningful emission/absorption still needs integration
-along rays through those cells. Reuse AREPO-VTK's transfer and traversal semantics
-for that backend. An M4 GPU implementation requires a Metal port and comparisons
-with the native renderer before its output can be accepted as equivalent.
+The command creates a new output directory and refuses to overwrite one. It
+writes annotated PNGs, camera/style/scale/time JSON records, input/output
+hashes, adapter source/binary hashes, and graphics capabilities. Keep these
+records with each preview. Density-threshold surfaces help inspect geometry;
+they add no spatial resolution and do not replace validated optical rendering.
 
-## Implementation checks
+## Snapshot-loading gap
 
-- Verify closed polyhedra, shared faces, orientation, cell IDs, periodic
-  boundaries, and field bindings on small known meshes before a real snapshot.
-- Compare the adapter against the native AREPO mesh; never silently repair or
-  drop invalid cells.
-- Confirm orbit, zoom, field changes, and opacity changes reuse the resident mesh.
-- Check time labels and rulers against known coordinates, camera scales, and
-  independently verified snapshot metadata.
-- Measure snapshot-load time, peak memory, and interaction latency on the M4
-  before making performance claims.
-
-References: [AREPO-VTK](https://github.com/dnelson/ArepoVTK),
-[AREPO snapshot format](https://arepo-code.org/wp-content/userguide/snapshotformat.html),
-[VTK graphics backends](https://docs.vtk.org/en/latest/release_details/9.7/hardware-windows-and-wayland.html).
+The viewer currently selects complete, hash-bound v052 scene/sidecar pairs
+from the verified catalog and transfers only the requested pair. It does not
+yet read arbitrary raw HDF5 snapshots on demand. That path needs the compatible
+AREPO-VTK snapshot/mesh/EOS reader and its field/unit contracts, plus the
+workspace's required execution placement. No raw scientific reads or new
+production jobs were moved onto the Mac for these preview checks.

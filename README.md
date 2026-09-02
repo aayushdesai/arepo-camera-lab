@@ -1,13 +1,14 @@
 # AREPO Camera Lab
 
 `arepo-camera-lab` is a local, interactive camera and physical-channel explorer
-for portable AREPO full-cell scenes. It provides both a fast browser view and a
-native VTK/PyVista desktop view for finding compositions before paying for a
-scientific Voronoi render.
+for portable AREPO full-cell scenes. The live browser controls can display
+native 3D Voronoi faces through a local VTK renderer, or the existing fast WebGL
+point preview. The separate VTK point/glyph explorer remains available.
 
-Neither point renderer is the final ray tracer. The browser uses dependency-free
-WebGL and the desktop backend uses native VTK. The ArepoVTK-stellar/ArepoRT
-renderer remains the scientific backend that traverses the Voronoi mesh.
+The native face view reconstructs polyhedra from AREPO-VTK's stored neighbour
+planes. It is a geometry and physical-field preview. The ArepoVTK-stellar/ArepoRT
+ray tracer remains the backend for emission/absorption integration and movies
+that require that optical model.
 
 ## Quick start
 
@@ -51,6 +52,52 @@ because reloads and accidental tab closes are ambiguous.
 
 For one ad-hoc local file, `serve --scene ... --field-sidecar ... --snapshot
 721` remains available, but it does not create a multi-epoch dropdown.
+
+### Native Voronoi faces and measurements
+
+In the live viewer, choose **Native Voronoi cells**. Complete v052 connectivity
+is required. All native cell records and their field bindings remain available;
+the point-budget selector affects only the point preview. By default VTK draws
+the boundary of cells in the chosen physical range. **Interior faces** also
+draws interfaces within that selection, up to a bounded vertex budget.
+
+**Hide cells below density** controls visibility independently of the colour
+channel. Its initial value is 100 g cm^-3; lower it to see diffuse outflows.
+**Fit visible mesh** frames the current selection without editing an imported
+camera alternative. Orbit, pan, deep zoom, all physical/derived channels,
+palettes, ranges, gamma, saturation, brightness, opacity, presets, and pose
+review use the existing controls. Point size applies to the point preview.
+Mesh options are saved with new style presets and browser-session archives.
+
+The bottom-right overlay shows the loaded snapshot's simulation time and index,
+a zoom-dependent physical scale bar, and the active field legend. Choose
+centimetres or kilometres, or let the scale bar select automatically. The
+two-click ruler measures the 3D separation of picked cell surfaces in mesh mode;
+the point preview labels its screen-plane distance **projected**. World-space
+ruler points, cell IDs, units, and the source scene hash are retained in the
+browser-session record.
+
+The mesh worker is owned by the local server. **Quit**, Ctrl-C, and successful
+archive shutdown stop it locally, including an in-progress face build. Quitting
+does not require a cluster connection. Camera and colour changes reuse resident
+geometry; changes to visibility rebuild the affected surface. The native face
+adapter requires a C++17 compiler (`clang++` on macOS).
+
+To save annotated PNGs and exact camera/style/hash records:
+
+```bash
+arepo-camera-lab capture-mesh \
+  --config /absolute/path/native_capture.json \
+  --output-directory /absolute/path/native-preview-v001
+```
+
+See [the native viewer notes](docs/voronoi-raytrace-backend.md) and
+[capture configuration](examples/native-capture.example.json). Existing
+`capture-gallery` and `capture-spline-movie` retain their WebGL point-rendering
+behavior.
+
+This branch currently reads prepared v052 scenes and ID-bound sidecars. Direct
+loading of arbitrary raw HDF5 snapshots through AREPO-VTK is not implemented.
 
 For the native VTK desktop explorer, including magnetic-vector glyphs when a
 field sidecar is supplied:
@@ -104,7 +151,7 @@ The server listens only on `127.0.0.1`. Open the printed `http://127.0.0.1`
 URL; opening the control shell as a `file://` page cannot reach the local API.
 `400000` remains a fast default, but there is no artificial upper point limit:
 enter `0` to load every cell in the scene. The status band reports each loading
-phase and progress, and the lower-right label always states which simulation
+phase and progress, and the visible-data label always states which simulation
 output supplied the cells currently visible.
 
 The display panel keeps the underlying channel values rather than baking in one

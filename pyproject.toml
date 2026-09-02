@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [{name = "Aayush Desai"}]
-dependencies = ["numpy>=1.24", "h5py>=3.11", "pyvista>=0.46", "vtk>=9.3"]
+dependencies = ["numpy>=1.24", "h5py>=3.11", "pyvista>=0.46", "vtk>=9.3", "pillow>=10.1"]
 classifiers = [
   "Development Status :: 3 - Alpha",
   "Programming Language :: Python :: 3",
@@ -32,7 +32,7 @@ Repository = "https://github.com/aayushdesai/arepo-camera-lab"
 where = ["src"]
 
 [tool.setuptools.package-data]
-arepo_camera_lab = ["*.js"]
+arepo_camera_lab = ["*.js", "*.cpp"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

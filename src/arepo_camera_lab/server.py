@@ -41,7 +41,7 @@ button:hover { background: #242d35; }
 #statusBand { position: fixed; top: 104px; left: 0; right: 0; z-index: 2; height: 28px; display: grid; grid-template-columns: 1fr 220px; gap: 12px; align-items: center; padding: 4px 12px; background: rgba(8,11,14,.94); color: #a9bac5; font-size: 11px; }
 #progress { width: 100%; height: 9px; accent-color: #62a8cf; }
 iframe { position: fixed; top: 132px; left: 0; width: 100vw; height: calc(100vh - 132px); border: 0; background: #07090c; }
-#visibleData { position: fixed; right: 14px; bottom: 12px; z-index: 4; padding: 7px 10px; border: 1px solid #46535e; border-radius: 4px; background: rgba(8,11,14,.92); color: #e8f1f5; font-size: 12px; font-weight: 650; }
+#visibleData { position: fixed; left: 374px; bottom: 12px; z-index: 4; padding: 7px 10px; border: 1px solid #46535e; border-radius: 4px; background: rgba(8,11,14,.92); color: #e8f1f5; font-size: 12px; font-weight: 650; pointer-events: none; }
 #visibleData.offline { border-color: #8a4c4c; color: #ffc7c7; }
 @media (max-width: 850px) { header { height: 196px; grid-template-columns: repeat(3,minmax(0,1fr)); grid-template-rows: repeat(4,38px); } #snapshot { grid-column: 1 / 3; grid-row: 1; } #points { grid-column: 3; grid-row: 1; } #scene { grid-column: 1 / -1; grid-row: 2; } #fields { grid-column: 1 / -1; grid-row: 3; } #load { grid-column: 1; grid-row: 4; } #archive { grid-column: 2; grid-row: 4; } #quit { grid-column: 3; grid-row: 4; } #statusBand { top: 196px; } iframe { top: 224px; height: calc(100vh - 224px); } }
 </style>
@@ -153,6 +153,7 @@ class ViewerState:
     cleanup_configured: bool = False
     cleanup_destination: str | None = None
     cleanup_worker: threading.Thread | None = None
+    mesh_bridge: Any = None
     cleanup_receipt: Path | None = None
     cleanup_state: str = "idle"
     archive_id: str | None = None
@@ -210,6 +211,7 @@ class ViewerState:
                 path, header, cells, selected, center, axis, None,
                 scene_sha256, snapshot, None, field_sidecar)
             payload["scene"]["point_budget"] = max_points
+            payload["scene"]["native_mesh_available"] = bool(header["num_edges"] and not header["invalid_neighbor_edges"])
             if self.review_bundle is not None:
                 payload["review_workspace"] = review.public_workspace(
                     self.review_bundle, self.catalog, requested_pose_id)
@@ -218,6 +220,7 @@ class ViewerState:
             html = viewer.HTML_TEMPLATE.replace("__PAYLOAD__", encoded)
             with self.lock:
                 revision = int(self.progress.get("revision", 0)) + 1
+                self.close_mesh()
                 self.payload = payload
                 self.html = html
                 self.scene_path = path
@@ -347,6 +350,37 @@ class ViewerState:
                 })
             return result
 
+    def close_mesh(self) -> None:
+        with self.lock:
+            bridge, self.mesh_bridge = self.mesh_bridge, None
+        if bridge is not None:
+            bridge.close()
+
+    def mesh_request(self, request: dict) -> dict:
+        from .mesh_bridge import MeshBridge
+        with self.lock:
+            self._ensure_writable()
+            if self.payload is None or self.progress.get("loading"):
+                raise ValueError("Wait for the selected snapshot to load")
+            if request.get("scene_sha256") != self.payload["scene"]["sha256"]:
+                raise ValueError("Mesh request does not match the visible snapshot")
+            if self.mesh_bridge is not None and self.mesh_bridge.process.poll() is not None:
+                self.close_mesh()
+            if self.mesh_bridge is None:
+                self.mesh_bridge = MeshBridge({
+                    "scene_path": str(self.scene_path),
+                    "scene_sha256": self.payload["scene"]["sha256"],
+                    "snapshot": self.payload["scene"]["snapshot"],
+                    "scene_meta": self.payload["scene"],
+                    "field_sidecar_path": str(self.field_sidecar_path) if self.field_sidecar_path else None,
+                })
+            bridge = self.mesh_bridge
+        result = bridge.request(request)
+        with self.lock:
+            if bridge is not self.mesh_bridge:
+                raise ValueError("Snapshot changed while the mesh frame was rendering")
+        return result
+
     def _ensure_writable(self) -> None:
         if self.cleanup_state in ("running", "complete") or self.quitting:
             raise ValueError("the session is closing; editing and loading are paused")
@@ -389,6 +423,7 @@ class ViewerState:
             self.progress.update({"cleanup_error": None, "cleanup_progress": 0.0,
                                   "message": "Verifying and archiving the camera-lab session"})
             started = {"status": "archive_started", "archive_id": self.archive_id}
+        self.close_mesh()
 
         def report(value: float, message: str) -> None:
             with self.lock:
@@ -434,7 +469,8 @@ class ViewerState:
             if self.cleanup_state == "running":
                 raise ValueError("archive is still running; wait for its verification result")
             self.quitting = True
-            return {"status": "server_stopping"}
+        self.close_mesh()
+        return {"status": "server_stopping"}
 
 
     def catalog_payload(self) -> dict[str, Any]:
@@ -541,6 +577,10 @@ def _handler(state: ViewerState) -> type[BaseHTTPRequestHandler]:
                 self._send(HTTPStatus.OK, state.viewer_html().encode("utf-8"), "text/html; charset=utf-8")
             elif route == "/api/status":
                 self._json(HTTPStatus.OK, state.status())
+            elif route == "/api/mesh/status":
+                with state.lock:
+                    bridge = state.mesh_bridge
+                self._json(HTTPStatus.OK, bridge.status() if bridge else {"message": "Native mesh idle", "busy": False, "report": None})
             elif route == "/api/catalog":
                 self._json(HTTPStatus.OK, state.catalog_payload())
             else:
@@ -548,7 +588,8 @@ def _handler(state: ViewerState) -> type[BaseHTTPRequestHandler]:
 
         def do_POST(self) -> None:  # noqa: N802
             if self.path not in ("/api/load", "/api/pose", "/api/review-bundle",
-                                 "/api/shutdown", "/api/shutdown/ack", "/api/quit"):
+                                 "/api/shutdown", "/api/shutdown/ack", "/api/quit",
+                                 "/api/mesh/render", "/api/mesh/pick"):
                 self._json(HTTPStatus.NOT_FOUND, {"error": "not found"})
                 return
             try:
@@ -578,6 +619,13 @@ def _handler(state: ViewerState) -> type[BaseHTTPRequestHandler]:
                 if length <= 0 or length > 10_000_000:
                     raise ValueError("invalid request size")
                 request = json.loads(self.rfile.read(length))
+                if self.path in ("/api/mesh/render", "/api/mesh/pick"):
+                    if not isinstance(request, dict):
+                        raise ValueError("Mesh request must be a JSON object")
+                    request["action"] = "pick" if self.path.endswith("/pick") else "render"
+                    result = state.mesh_request(request)
+                    self._json(HTTPStatus.OK, result)
+                    return
                 if self.path == "/api/pose":
                     path = state.save_pose(request)
                     self._json(HTTPStatus.CREATED, {"path": str(path)})
@@ -621,4 +669,5 @@ def run_server(state: ViewerState, port: int) -> None:
     except KeyboardInterrupt:
         pass
     finally:
+        state.close_mesh()
         server.server_close()

@@ -1,0 +1,29 @@
+{
+  "scene_path": "/absolute/path/to/scene_v052.bin",
+  "scene_sha256": "replace-with-the-verified-64-character-scene-sha256",
+  "field_sidecar_path": "/absolute/path/to/snapshot.fields.npz",
+  "field_sidecar_sha256": "replace-with-the-verified-64-character-sidecar-sha256",
+  "snapshot": 721,
+  "frames": [
+    {
+      "name": "native-mesh",
+      "title": "Native Voronoi cells",
+      "subtitle": "Density-selected surface; colour shows rotational fraction",
+      "fit_visible": true,
+      "parameters": {
+        "camera": {
+          "target": [0, 0, 0], "forward": [0.9, 0, -0.4],
+          "up": [0, 0, 1], "scale": 0.1
+        },
+        "style": {
+          "channel": "rotational_fraction", "scale_mode": "linear",
+          "low": 0, "high": 1, "linthresh": 1,
+          "palette": "copper_blue", "gamma": 1,
+          "saturation": 1, "brightness": 1, "opacity": 1
+        },
+        "density_floor": 100, "edges": false, "lighting": true,
+        "interior_faces": false, "width": 1440, "height": 960
+      }
+    }
+  ]
+}

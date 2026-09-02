@@ -288,8 +288,12 @@ def _channel_payload(values: np.ndarray, *, label: str, units: str,
     elif default_scale == "log10":
         positive = finite[finite > 0.0]
         if positive.size == 0:
-            raise ValueError(f"logarithmic channel {label} has no positive values")
-        low, high = [float(value) for value in np.quantile(positive, [0.01, 0.99])]
+            # A stationary or unmagnetised snapshot still has valid zero-valued
+            # fields. Keep their values and offer a linear display by default.
+            default_scale = "linear"
+            low, high = float(np.min(finite)), float(np.max(finite))
+        else:
+            low, high = [float(value) for value in np.quantile(positive, [0.01, 0.99])]
     else:
         low, high = [float(value) for value in np.quantile(finite, [0.01, 0.99])]
     if not high > low:
@@ -542,6 +546,16 @@ HTML_TEMPLATE = r'''<!doctype html>
 * { box-sizing: border-box; }
 body { margin: 0; overflow: hidden; background: #07090c; color: #e8edf1; }
 #view { position: fixed; left: 360px; top: 0; width: calc(100vw - 360px); height: 100vh; cursor: grab; }
+#meshImage { position: fixed; left: 360px; top: 0; width: calc(100vw - 360px); height: 100vh; display: none; pointer-events: none; z-index: 1; }
+#measurementHud { position: fixed; right: 16px; bottom: 16px; z-index: 5; width: 235px; background: rgba(7,11,15,.85); border: 1px solid #354550; border-radius: 5px; padding: 10px 12px; pointer-events: none; font-size: 11px; }
+#timeLabel { font-size: 12px; color: #eaf1f5; margin-bottom: 9px; }
+#scaleLine { height: 7px; border: 1.5px solid #eaf1f5; border-top: 0; margin: 4px 0 9px auto; }
+#scaleLabel { text-align: right; }
+#legendTitle { font-size: 10px; color: #c2d0d8; margin-top: 6px; }
+#legendGradient { height: 10px; margin-top: 4px; }
+.legendLimits { display: flex; justify-content: space-between; margin-top: 2px; font-size: 10px; }
+#rulerOverlay { position: fixed; z-index: 4; pointer-events: none; overflow: hidden; }
+
 #view.dragging { cursor: grabbing; }
 #panel { position: fixed; left: 0; top: 0; width: 360px; height: 100vh; overflow-y: auto; padding: 16px; background: #11151a; border-right: 1px solid #303741; }
 h1 { margin: 0 0 14px; font-size: 17px; font-weight: 650; }
@@ -566,18 +580,35 @@ button:hover { background: #222b33; }
 	#reviewDirty.saved { border-color: #5fa77a; color: #bde7ca; }
 	#reviewVerification { margin: 8px 0 0; padding: 8px; border: 1px solid #303a43; background: #0b1015; color: #aebdc7; white-space: pre-wrap; font-size: 10px; line-height: 1.45; }
 #timeline { display: none; }
-.hint { position: fixed; right: 14px; bottom: 46px; padding: 6px 8px; background: rgba(8,11,14,.78); color: #a9b6bf; font-size: 11px; }
-#visibleSnapshot { position: fixed; right: 14px; bottom: 12px; z-index: 4; padding: 7px 10px; border: 1px solid #46535e; border-radius: 4px; background: rgba(8,11,14,.92); color: #e8f1f5; font-size: 12px; font-weight: 650; }
+.hint { position: fixed; right: 14px; top: 12px; padding: 6px 8px; background: rgba(8,11,14,.78); color: #a9b6bf; font-size: 11px; }
+#visibleSnapshot { position: fixed; right: 14px; top: 42px; z-index: 4; padding: 7px 10px; border: 1px solid #46535e; border-radius: 4px; background: rgba(8,11,14,.92); color: #e8f1f5; font-size: 12px; font-weight: 650; }
 body.capture-mode #panel, body.capture-mode .hint, body.capture-mode #visibleSnapshot { display: none; }
-body.capture-mode #view { left: 0; width: 100vw; height: 100vh; }
-@media (max-width: 760px) { #panel { width: 290px; } #view { left: 290px; width: calc(100vw - 290px); } }
+body.capture-mode #view, body.capture-mode #meshImage { left: 0; width: 100vw; height: 100vh; }
+@media (max-width: 760px) { #panel { width: 290px; } #view, #meshImage { left: 290px; width: calc(100vw - 290px); } }
 </style>
 </head>
 <body>
 <canvas id="view"></canvas>
+<img id="meshImage" alt="Native 3D Voronoi cell view">
+<svg id="rulerOverlay" aria-label="Physical ruler"></svg>
+<div id="measurementHud"><div id="timeLabel"></div><div id="scaleLabel"></div><div id="scaleLine"></div><div id="legendTitle"></div><div id="legendGradient"></div><div class="legendLimits"><span id="legendLow"></span><span id="legendHigh"></span></div></div>
 <aside id="panel">
   <h1>Stellar Camera Lab</h1>
   <div id="sceneMeta" class="meta"></div>
+  <h2>3D view</h2>
+  <label for="renderMode">Renderer</label><select id="renderMode"><option value="mesh">Native Voronoi cells</option><option value="points">Point preview</option></select>
+  <label for="meshDensityFloor">Hide cells below density (g cm⁻³)</label><input id="meshDensityFloor" type="number" value="100" min="0" step="any">
+  <div class="meta">Mesh visibility only; lower this to reveal diffuse outflows. The colour channel stays independent.</div>
+  <button id="meshFit">Fit visible mesh</button>
+  <div class="check"><input id="meshEdges" type="checkbox"><label for="meshEdges">Show cell edges</label></div>
+  <div class="check"><input id="meshInterior" type="checkbox"><label for="meshInterior">Show interior cell faces</label></div>
+  <div class="check"><input id="meshLighting" type="checkbox" checked><label for="meshLighting">Light cell faces</label></div>
+  <div id="meshNotice" class="meta"></div><button id="meshRetry" type="button">Refresh mesh</button>
+  <h2>Time and scale</h2>
+  <div class="check"><input id="showAnnotations" type="checkbox" checked><label for="showAnnotations">Show time, scale, and field legend</label></div>
+  <label for="measureUnit">Distance units</label><select id="measureUnit"><option value="auto">Automatic</option><option value="cm">Centimeters</option><option value="km">Kilometers</option></select>
+  <div class="check"><input id="rulerToggle" type="checkbox"><label for="rulerToggle">Two-point ruler</label></div>
+  <button id="clearRuler" type="button">Clear measurement</button><div id="rulerStatus" class="meta">Mesh picks measure 3D distance; point-view picks measure projected distance.</div>
   <h2>Display</h2>
   <label for="channel">Physical channel</label><select id="channel"></select>
   <div id="channelMeta" class="meta"></div>
@@ -766,7 +797,7 @@ function safeRange(){let low=rangeState.low,high=rangeState.high;if(scaleMode.va
 function updateColorBar(){const gradient=paletteGradients[palette.value];colorBar.style.background=`linear-gradient(90deg,${invert.checked?gradient.split(',').reverse().join(','):gradient})`;}
 function updateChannelMeta(){const [low,high]=safeRange(),invalid=currentChannel.nonfinite_count?` | ${currentChannel.nonfinite_count.toLocaleString()} invalid hidden`:'';channelMeta.textContent=`${currentChannel.label} [${currentChannel.units}] | data ${formattedNumber(currentChannel.data_min)} to ${formattedNumber(currentChannel.data_max)} | visible ${formattedNumber(low)} to ${formattedNumber(high)}${invalid}`;}
 function applyPreset(){if(rangePreset.value==='custom')return;let low,high;if(rangePreset.value==='symmetric'){const bound=Math.max(Math.abs(currentChannel.percentiles[1]),Math.abs(currentChannel.percentiles[99]));low=-bound;high=bound;}else{const [a,b]=rangePreset.value.split(',').map(Number);low=currentChannel.percentiles[a];high=currentChannel.percentiles[b];}if(scaleMode.value==='log10'&&low<=0)low=currentChannel.positive_min??1e-30;setNumericValue('low',rangeLow,low);setNumericValue('high',rangeHigh,high);updateChannelMeta();}
-function render(){resize();const [low,high]=safeRange();gl.clearColor(0.015,0.022,0.03,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.uniform3fv(locations.target,camera.target);gl.uniform3fv(locations.right,camera.right);gl.uniform3fv(locations.up,camera.up);gl.uniform3fv(locations.forward,camera.forward);gl.uniform1f(locations.scale,camera.scale);gl.uniform1f(locations.aspect,canvas.width/canvas.height);gl.uniform1f(locations.depth,4.0);gl.uniform1f(locations.point,+pointSize.value*(devicePixelRatio||1));gl.uniform1f(locations.domain_low,transformValue(low));gl.uniform1f(locations.domain_high,transformValue(high));gl.uniform1f(locations.scale_mode,scaleIds[scaleMode.value]);gl.uniform1f(locations.linthresh,Math.max(rangeState.linthresh,1e-30));gl.uniform1f(locations.opacity,+opacity.value);gl.uniform1f(locations.palette,paletteIds[palette.value]);gl.uniform1f(locations.gamma,+gamma.value);gl.uniform1f(locations.invert,invert.checked?1:0);gl.uniform1f(locations.saturation,+saturation.value);gl.uniform1f(locations.brightness,+brightness.value);gl.drawArrays(gl.POINTS,0,DATA.point_count);zoomReadout.textContent=`screen half extent ${(camera.scale*DATA.scene.display_radius_cm).toExponential(3)} cm (${camera.scale.toExponential(3)} scene radii)`;if(!batchCapture)requestAnimationFrame(render);}
+function render(){resize();updateMeasurements();if(renderMode.value==='mesh'){requestNativeFrame();zoomReadout.textContent=`screen half extent ${(camera.scale*DATA.scene.display_radius_cm).toExponential(3)} cm`;if(!batchCapture)requestAnimationFrame(render);return;}meshImage.style.display='none';const [low,high]=safeRange();gl.clearColor(0.015,0.022,0.03,1);gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);gl.enable(gl.DEPTH_TEST);gl.enable(gl.BLEND);gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);gl.uniform3fv(locations.target,camera.target);gl.uniform3fv(locations.right,camera.right);gl.uniform3fv(locations.up,camera.up);gl.uniform3fv(locations.forward,camera.forward);gl.uniform1f(locations.scale,camera.scale);gl.uniform1f(locations.aspect,canvas.width/canvas.height);gl.uniform1f(locations.depth,4.0);gl.uniform1f(locations.point,+pointSize.value*(devicePixelRatio||1));gl.uniform1f(locations.domain_low,transformValue(low));gl.uniform1f(locations.domain_high,transformValue(high));gl.uniform1f(locations.scale_mode,scaleIds[scaleMode.value]);gl.uniform1f(locations.linthresh,Math.max(rangeState.linthresh,1e-30));gl.uniform1f(locations.opacity,+opacity.value);gl.uniform1f(locations.palette,paletteIds[palette.value]);gl.uniform1f(locations.gamma,+gamma.value);gl.uniform1f(locations.invert,invert.checked?1:0);gl.uniform1f(locations.saturation,+saturation.value);gl.uniform1f(locations.brightness,+brightness.value);gl.drawArrays(gl.POINTS,0,DATA.point_count);zoomReadout.textContent=`screen half extent ${(camera.scale*DATA.scene.display_radius_cm).toExponential(3)} cm (${camera.scale.toExponential(3)} scene radii)`;if(!batchCapture)requestAnimationFrame(render);}
 const SAFE_FUNCTION_ARITY={abs:1,sqrt:1,log10:1,ln:1,exp:1,min:2,max:2,pow:2,clip:3};
 function tokenizeDerivedExpression(source){
   const tokens=[];let index=0;
@@ -887,9 +918,9 @@ let reviewBundle=storedReview(),reviewDrafts=storedDrafts(),activePose=null,styl
 const alternatives=reviewBundle?.geometry?.alternatives??[];
 function uniqueId(prefix){if(globalThis.crypto&&crypto.randomUUID)return `${prefix}-${crypto.randomUUID()}`;return `${prefix}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2,10)}`;}
 function persistReview(){if(!reviewBundle)return false;try{localStorage.setItem(REVIEW_STORAGE,JSON.stringify(reviewBundle));localStorage.setItem(REVIEW_DRAFT_STORAGE,JSON.stringify(reviewDrafts));return true;}catch(error){statusText.textContent=`Browser review storage failed: ${error.message}`;return false;}}
-function visualState(forPose=activePose){if(!forPose)throw new Error('Select an immutable pose first.');resize();return {schema:'stellar_camera_visual_state_v001',channel:channel.value,scale_mode:scaleMode.value,low:rangeState.low,high:rangeState.high,symlog_threshold:rangeState.linthresh,palette:palette.value,inversion:invert.checked,gamma:Number(gamma.value),saturation:Number(saturation.value),brightness:Number(brightness.value),point_size:Number(pointSize.value),opacity:Number(opacity.value),point_budget:Number(DATA.scene.point_budget??DATA.point_count),canvas_size:{width:canvas.width,height:canvas.height},scene_sha256:forPose.scene_sha256,field_sidecar_sha256:reviewSidecars[String(forPose.snapshot)]??null};}
+function visualState(forPose=activePose){if(!forPose)throw new Error('Select an immutable pose first.');resize();return {schema:'stellar_camera_visual_state_v001',channel:channel.value,scale_mode:scaleMode.value,low:rangeState.low,high:rangeState.high,symlog_threshold:rangeState.linthresh,palette:palette.value,inversion:invert.checked,gamma:Number(gamma.value),saturation:Number(saturation.value),brightness:Number(brightness.value),point_size:Number(pointSize.value),opacity:Number(opacity.value),point_budget:Number(DATA.scene.point_budget??DATA.point_count),canvas_size:{width:canvas.width,height:canvas.height},scene_sha256:forPose.scene_sha256,field_sidecar_sha256:reviewSidecars[String(forPose.snapshot)]??null,mesh_view:meshViewState()};}
 function syncStyleReadouts(){gammaValue.textContent=Number(gamma.value).toFixed(2);saturationValue.textContent=Number(saturation.value).toFixed(2);brightnessValue.textContent=Number(brightness.value).toFixed(2);updateColorBar();updateChannelMeta();}
-function applyVisualState(state){if(!state)return;suppressStyleDirty=true;try{if(DATA.channels[state.channel]){channel.value=state.channel;loadChannel(state.channel);}scaleMode.value=state.scale_mode;palette.value=state.palette;setNumericValue('low',rangeLow,Number(state.low));setNumericValue('high',rangeHigh,Number(state.high));setNumericValue('linthresh',linthresh,Number(state.symlog_threshold));rangePreset.value='custom';invert.checked=Boolean(state.inversion);gamma.value=String(state.gamma);saturation.value=String(state.saturation);brightness.value=String(state.brightness);pointSize.value=String(state.point_size);opacity.value=String(state.opacity);restoredCanvasSize={width:Number(state.canvas_size.width),height:Number(state.canvas_size.height)};resize();symlogControl.style.display=scaleMode.value==='symlog'?'block':'none';syncStyleReadouts();}finally{suppressStyleDirty=false;}}
+function applyVisualState(state){if(!state)return;suppressStyleDirty=true;try{if(DATA.channels[state.channel]){channel.value=state.channel;loadChannel(state.channel);}scaleMode.value=state.scale_mode;palette.value=state.palette;setNumericValue('low',rangeLow,Number(state.low));setNumericValue('high',rangeHigh,Number(state.high));setNumericValue('linthresh',linthresh,Number(state.symlog_threshold));rangePreset.value='custom';invert.checked=Boolean(state.inversion);gamma.value=String(state.gamma);saturation.value=String(state.saturation);brightness.value=String(state.brightness);pointSize.value=String(state.point_size);opacity.value=String(state.opacity);restoredCanvasSize={width:Number(state.canvas_size.width),height:Number(state.canvas_size.height)};resize();symlogControl.style.display=scaleMode.value==='symlog'?'block':'none';syncStyleReadouts();if(state.mesh_view)applyMeshViewState(state.mesh_view);}finally{suppressStyleDirty=false;}}
 function latestBinding(poseId){if(!reviewBundle)return null;for(let index=reviewBundle.pose_style_bindings.length-1;index>=0;--index){const binding=reviewBundle.pose_style_bindings[index];if(binding.pose_id===poseId)return binding;}return null;}
 function cameraSummary(){if(!activePose)return 'camera: no active pose';return `camera: ${cameraExact?'exact immutable geometry':'interactive camera differs from immutable geometry'}\nposition_cm: ${activePose.position_cm.join(', ')}\nlook_at_cm: ${activePose.look_at_cm.join(', ')}\nview_direction: ${activePose.view_direction.join(', ')}\nup: ${activePose.up.join(', ')}\nscreen_half_extent_cm: ${activePose.screen_half_extent_cm}`;}
 function updateReviewReadout(){if(!activePose){reviewDirty.className='';reviewDirty.textContent='No reviewed pose is active.';reviewVerification.textContent='Load a pose bundle to verify camera and display state.';return;}reviewDirty.className=styleDirty?'unsaved':'saved';reviewDirty.textContent=styleDirty?'UNSAVED STYLE DRAFT retained in this browser':'STYLE BINDING SAVED (camera geometry unchanged)';reviewVerification.textContent=`pose_id: ${activePose.pose_id}\nsnapshot: ${activePose.snapshot}\nscene_sha256: ${activePose.scene_sha256}\n${cameraSummary()}\nchannel: ${channel.value}\nscale/range: ${scaleMode.value} [${rangeState.low}, ${rangeState.high}]\nsymlog_threshold: ${rangeState.linthresh}\npalette/invert: ${palette.value} / ${invert.checked}\ngamma/saturation/brightness: ${gamma.value} / ${saturation.value} / ${brightness.value}\npoint_size/opacity/budget: ${pointSize.value} / ${opacity.value} / ${DATA.scene.point_budget??DATA.point_count}\ncanvas: ${canvas.width}x${canvas.height}`;}
@@ -911,7 +942,8 @@ window.cameraLabSessionState=()=>({
   review_bundle:cloned(reviewBundle),review_drafts:cloned(reviewDrafts),
   derived_channels:cloned(derivedDefinitions),active_pose_id:activePose?.pose_id??null,
   current_camera:activePose&&cameraExact?cloned(activePose):pose(),
-  current_visual_state:activePose?visualState(activePose):null
+  current_visual_state:activePose?visualState(activePose):null,
+  renderer_mode:renderMode.value,mesh_view:meshViewState(),measurements:window.cameraLabMeasurements()
 });
 rebuildPoseMenu();rebuildPresetMenu('');
 reviewPose.onchange=()=>activatePoseId(reviewPose.value).catch(error=>statusText.textContent=error.message);
@@ -927,7 +959,7 @@ saveReviewServerButton.onclick=async()=>{try{if(!reviewBundle)throw new Error('N
 for(const control of [channel,scaleMode,palette,rangeLow,rangeHigh,linthresh,invert,gamma,saturation,brightness,pointSize,opacity]){control.addEventListener('input',markStyleDirty);control.addEventListener('change',markStyleDirty);}
 timelinePanel.style.display='block';
 if(DATA.camera_path.length){pathSlider.max=DATA.camera_path.length-1;const show=i=>{const entry=DATA.camera_path[i];setCamera(entry);pathStatus.textContent=`camera path row ${entry.snapshot} (${i+1}/${DATA.camera_path.length}); visible cells remain AREPO snapshot ${DATA.scene.snapshot??'unknown'}`;};pathSlider.oninput=()=>show(+pathSlider.value);playButton.onclick=()=>{if(playing)return;playing=setInterval(()=>{let i=(+pathSlider.value+1)%DATA.camera_path.length;pathSlider.value=i;show(i);},50);};stopButton.onclick=()=>{clearInterval(playing);playing=null;};show(0);}else{pathSlider.disabled=true;playButton.disabled=true;stopButton.disabled=true;pathStatus.textContent='No spline is loaded. Save one camera pose at each of at least two different snapshots, compile them, then rebuild this viewer with --camera-path.';}
-document.onkeydown=e=>{if(e.key==='k'||e.key==='K')savePoseOverrideButton.click();if(e.code==='Space'){e.preventDefault();if(playing)stopButton.click();else if(DATA.camera_path.length)playButton.click();else statusText.textContent='Space plays a compiled path; this single-scene viewer has none loaded yet.';}if(e.key==='r'||e.key==='R')resetButton.click();};
+document.onkeydown=e=>{if(e.target.closest('input,textarea,select,[contenteditable=true]'))return;if(e.key==='k'||e.key==='K')savePoseOverrideButton.click();if(e.code==='Space'){e.preventDefault();if(playing)stopButton.click();else if(DATA.camera_path.length)playButton.click();else statusText.textContent='Space plays a compiled path; this single-scene viewer has none loaded yet.';}if(e.key==='r'||e.key==='R')resetButton.click();};
 function setPhysicalPose(entry,visibleSceneBinding=null){
   const expectedSnapshot=visibleSceneBinding===null?Number(entry.snapshot):Number(visibleSceneBinding.visible_snapshot);
   const expectedSceneSha=visibleSceneBinding===null?String(entry.scene_sha256):String(visibleSceneBinding.scene_sha256);
@@ -946,6 +978,8 @@ function setPhysicalPose(entry,visibleSceneBinding=null){
   if(!Number.isFinite(scale)||scale<=0)throw new Error('Pose screen half extent must be positive and finite.');
   setCamera({target,forward,up,scale});
 }
+__MEASUREMENT_MATH__
+__MESH_VIEWER__
 if(alternatives.length){const pending=DATA.review_workspace?.requested_pose_id||localStorage.getItem(REVIEW_PENDING_POSE),initialPose=alternatives.some(row=>row.pose_id===pending)?pending:(alternatives.find(row=>Number(row.snapshot)===Number(DATA.scene.snapshot))?.pose_id);if(initialPose)activatePoseId(initialPose).catch(error=>statusText.textContent=error.message);}
 function setCaptureMode(enabled){
   batchCapture=Boolean(enabled);document.body.classList.toggle('capture-mode',batchCapture);
@@ -953,6 +987,8 @@ function setCaptureMode(enabled){
 }
 async function prepareCapture(entry,name,settings={},visibleSceneBinding=null){
   if(!DATA.channels[name])throw new Error(`Unknown physical channel ${name}.`);
+  renderMode.value=settings.renderer==='mesh'&&meshLive?'mesh':'points';
+  if(settings.mesh_view)applyMeshViewState(settings.mesh_view);
   setCaptureMode(true);setPhysicalPose(entry,visibleSceneBinding);channel.value=name;loadChannel(name);
   palette.value=settings.palette||'copper_blue';scaleMode.value=settings.scale_mode||currentChannel.default_scale;
   if(Number.isFinite(Number(settings.low)))setNumericValue('low',rangeLow,Number(settings.low));
@@ -964,8 +1000,8 @@ async function prepareCapture(entry,name,settings={},visibleSceneBinding=null){
   if(Number.isFinite(Number(settings.saturation)))saturation.value=String(settings.saturation);
   if(Number.isFinite(Number(settings.brightness)))brightness.value=String(settings.brightness);
   invert.checked=Boolean(settings.invert);symlogControl.style.display=scaleMode.value==='symlog'?'block':'none';updateColorBar();updateChannelMeta();
-  resize();render();gl.finish();await new Promise(resolve=>requestAnimationFrame(resolve));
-  return {schema:'arepo_camera_lab_capture_state_v001',camera_snapshot:Number(entry.snapshot),snapshot:Number(DATA.scene.snapshot),scene_sha256:DATA.scene.sha256,visible_scene_binding:visibleSceneBinding,pose_id:entry.pose_id??null,channel:name,palette:palette.value,scale_mode:scaleMode.value,low:rangeState.low,high:rangeState.high,linthresh:rangeState.linthresh,point_size:Number(pointSize.value),opacity:Number(opacity.value),gamma:Number(gamma.value),saturation:Number(saturation.value),brightness:Number(brightness.value),invert:invert.checked,point_count:DATA.point_count,camera_pose:pose(),canvas:{width:canvas.width,height:canvas.height}};
+  resize();render();if(renderMode.value==='mesh')await awaitNativeFrame();else gl.finish();updateMeasurements();await new Promise(resolve=>requestAnimationFrame(resolve));
+  return {schema:'arepo_camera_lab_capture_state_v001',camera_snapshot:Number(entry.snapshot),snapshot:Number(DATA.scene.snapshot),scene_sha256:DATA.scene.sha256,visible_scene_binding:visibleSceneBinding,pose_id:entry.pose_id??null,channel:name,palette:palette.value,scale_mode:scaleMode.value,low:rangeState.low,high:rangeState.high,linthresh:rangeState.linthresh,point_size:Number(pointSize.value),opacity:Number(opacity.value),gamma:Number(gamma.value),saturation:Number(saturation.value),brightness:Number(brightness.value),invert:invert.checked,point_count:DATA.point_count,renderer:renderMode.value,mesh_report:meshLastReport,measurements:window.cameraLabMeasurements(),camera_pose:pose(),canvas:{width:canvas.width,height:canvas.height}};
 }
 window.AREPO_CAMERA_LAB_CAPTURE={schema:'arepo_camera_lab_capture_api_v001',channels:[...BASE_CHANNEL_NAMES],scene:{...DATA.scene},prepare:prepareCapture,setCaptureMode};
 render();
@@ -973,6 +1009,9 @@ render();
 </body>
 </html>
 '''
+
+
+HTML_TEMPLATE = HTML_TEMPLATE.replace("__MEASUREMENT_MATH__", Path(__file__).with_name("measurement_math.js").read_text()).replace("__MESH_VIEWER__", Path(__file__).with_name("mesh_viewer.js").read_text())
 
 
 def write_html(path: Path, payload: dict) -> None:

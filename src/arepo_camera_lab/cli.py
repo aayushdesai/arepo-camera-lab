@@ -204,6 +204,12 @@ def parser() -> argparse.ArgumentParser:
     vtk_backend.add_arguments(vtk_parser)
     vtk_parser.set_defaults(function=vtk_backend.run)
 
+    from . import mesh_capture
+    mesh_parser = commands.add_parser(
+        "capture-mesh", help="Render native Voronoi faces with time, scale, and field annotations")
+    mesh_capture.add_arguments(mesh_parser)
+    mesh_parser.set_defaults(function=mesh_capture.run)
+
     cleanup_parser = commands.add_parser(
         "cleanup", help="Rsync session outputs to a no-clobber cluster path and remove verified cache files")
     cleanup.add_arguments(cleanup_parser)
