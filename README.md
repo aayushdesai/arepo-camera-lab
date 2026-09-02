@@ -10,6 +10,10 @@ planes. It is a geometry and physical-field preview. The ArepoVTK-stellar/ArepoR
 ray tracer remains the backend for emission/absorption integration and movies
 that require that optical model.
 
+Development follows [document-as-you-build guidance](CONTRIBUTING.md):
+usage, implementation decisions, verification, and remaining work stay current
+with each change.
+
 ## Quick start
 
 ```bash
@@ -45,10 +49,11 @@ with fewer controls. See `examples/catalog.example.json`.
 
 For an automatically archived disposable cache, add
 `--cleanup-on-close --sync-back-destination user@login:/unique/session/path`.
-The **Archive & close** button then stops the server, checksum-uploads the
-numbered pose files, verifies every cluster input, and removes only the verified
-local cache files. Closing a browser tab alone deliberately does not delete data
-because reloads and accidental tab closes are ambiguous.
+The **Archive & close** button freezes edits, saves the browser session, and
+stops the native worker. It archives session outputs, verifies the archive and
+cluster inputs, removes only verified local cache files, and then stops the
+server after reporting completion. Closing a browser tab alone deliberately
+does not delete data because reloads and accidental tab closes are ambiguous.
 
 For one ad-hoc local file, `serve --scene ... --field-sidecar ... --snapshot
 721` remains available, but it does not create a multi-epoch dropdown.
