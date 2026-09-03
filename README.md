@@ -75,12 +75,13 @@ weighting. The field colour, camera, and original pose remain independent.
 **Hide cells below density** starts at 100 g cm^-3; the outflow preset lowers it
 to 0.01 g cm^-3. Advanced controls expose reference density, physical path
 length, and density weighting. These are display settings, not calibrated
-radiation transport. **Field reconstruction** initially selects **Linear field**,
-which varies the displayed field within each native cell using bounded gradients
-from its actual neighbours. **Original cell values** retains the exported values
-for debugging. **Legacy smoothing** preserves the earlier, slower Shepard mode
-for existing presets and comparisons. These display reconstructions do not add
-simulation resolution or establish whether a feature is physically resolved.
+radiation transport. A fresh viewer selects **Continuous field** and **Standard**
+quality. It blends local gradients across native cell boundaries and computes
+colour and opacity from reconstructed fields. **Linear field · fast**,
+**Original cell values**, and **Legacy smoothing** remain selectable. Saved
+presets retain their previous reconstruction and transfer order. These display
+reconstructions do not add simulation resolution or establish whether a feature
+is physically resolved.
 The gas-density channel
 is the simulation mass density in g cm^-3, not a density proxy.
 
@@ -89,11 +90,20 @@ Neither native view changes the run's refinement. The
 positions and checks sampled cell volumes against the raw snapshot. This
 validates the saved geometry at that epoch; the image-quality problem remains.
 
-High quality integrates four deterministic subpixel rays with two samples per
-cell; a smaller frame with one of each renders during orbit/zoom and refines
-after interaction stops. Linear gradients are prepared once per field/transfer
-change on the M4 and reused for camera changes. Existing saved volume presets
-retain their original reconstruction.
+Continuous reconstruction uses two samples per crossed cell. **Standard**
+uses one ray per pixel; **High · antialiased** uses four and takes longer.
+Orbit/zoom uses a smaller, fast linear preview and then restores the selected
+reconstruction after interaction stops. Gradients are prepared once per field
+change on the M4 and reused for camera changes. At 960 by 640 with one ray and
+two cell samples, the first continuous comparisons took 1.83–4.32 s on M4 Pro;
+linear reconstruction took 0.06–0.11 s. These exclude loading and image delivery.
+
+Under **Adjust transparency**, **Compute opacity from reconstructed density**
+controls transfer order. **Keep opacity outside the colour range** clamps the
+palette without hiding that gas. The optional dense-gas fade reduces foreground
+opacity over one decade in density; a fraction of 1 leaves it unchanged. These
+settings are saved with presets. See the [field reconstruction notes](docs/field-reconstruction-work.md)
+for the comparison, limitations, and source-backed method.
 
 **Fit visible mesh** frames the visible cells without editing an imported
 camera alternative. Orbit, pan, deep zoom, all physical/derived channels,

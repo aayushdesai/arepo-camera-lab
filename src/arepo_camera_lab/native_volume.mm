@@ -14,6 +14,8 @@
 
 struct KDNode { float split; uint32_t axis, left, right, first, last, pad[2]; };
 struct Uniforms { uint32_t shape[4]; float camera[16]; uint32_t scene[4]; };
+struct Transfer {float domain[4], density[4], flags[4], bounds[4];};
+static_assert(sizeof(Transfer)==64, "Metal field transfer layout");
 static_assert(sizeof(KDNode) == 32 && sizeof(Uniforms) == 96, "Metal buffer layout");
 
 struct Volume {
@@ -24,6 +26,7 @@ struct Volume {
   uint32_t count, root;
   uint32_t gradientFallbacks;
   double gradientSeconds;
+  Transfer transfer{};
   std::string deviceName;
 };
 
@@ -117,10 +120,11 @@ extern "C" const char* av_device(void* handle) {
 }
 
 extern "C" int av_fields(void* handle, const float* fields, const float* palette,
-                          float edgeScale,char* error, size_t errorSize) {
+                          float edgeScale,const float* transfer,char* error, size_t errorSize) {
   @autoreleasepool {
     try {
       auto* v = static_cast<Volume*>(handle);
+      std::memcpy(&v->transfer,transfer,sizeof(Transfer));
       v->fields = buffer(v, fields, size_t(v->count)*8);
       v->palette = buffer(v, palette, 512*16);
       if(!v->gradients)v->gradients=[v->device newBufferWithLength:size_t(v->count)*48 options:MTLResourceStorageModeShared];
@@ -158,7 +162,7 @@ extern "C" int av_render(void* handle, uint32_t width, uint32_t height,
     try {
       auto* v = static_cast<Volume*>(handle);
       if(!v->fields || !v->palette) throw std::runtime_error("Set the native volume transfer before rendering");
-      if(reconstruction>2 || (cellSamples!=1 && cellSamples!=2))
+      if(reconstruction>3 || (cellSamples!=1 && cellSamples!=2))
         throw std::runtime_error("Invalid native volume reconstruction or cell sampling");
       const size_t rays = size_t(width)*height*subpixels;
       if(!rays || rays > 1920ul*1200*4) throw std::runtime_error("Native volume viewport exceeds its pixel budget");
@@ -174,6 +178,7 @@ extern "C" int av_render(void* handle, uint32_t width, uint32_t height,
       for(NSUInteger i=0;i<buffers.count;i++) [encoder setBuffer:buffers[i] offset:0 atIndex:i];
       [encoder setBytes:&u length:sizeof(u) atIndex:9];
       [encoder setBuffer:v->gradients offset:0 atIndex:10];
+      [encoder setBytes:&v->transfer length:sizeof(Transfer) atIndex:11];
       NSUInteger group = std::min(NSUInteger(128),v->pipeline.maxTotalThreadsPerThreadgroup);
       [encoder dispatchThreads:MTLSizeMake(rays,1,1) threadsPerThreadgroup:MTLSizeMake(group,1,1)];
       [encoder endEncoding]; [command commit]; [command waitUntilCompleted];
@@ -188,11 +193,12 @@ extern "C" int av_render(void* handle, uint32_t width, uint32_t height,
 }
 
 extern "C" int av_sample_fields(void* handle, const float* points, uint32_t count,
-                                 float box,uint32_t reconstruction, float* values, char* error, size_t errorSize) {
+                                 float box,uint32_t reconstruction, uint32_t applyTransfer,
+                                 float* values, char* error, size_t errorSize) {
   @autoreleasepool {
     try {
       auto* v=static_cast<Volume*>(handle);
-      if(!v->fields || !count || count>1000000 || !(box>0) || reconstruction>2)
+      if(!v->fields || !count || count>1000000 || !(box>0) || reconstruction>3)
         throw std::runtime_error("Invalid native field sample request");
       auto queries=buffer(v,points,size_t(count)*16);
       id<MTLBuffer> output=[v->device newBufferWithLength:size_t(count)*8 options:MTLResourceStorageModeShared];
@@ -206,6 +212,8 @@ extern "C" int av_sample_fields(void* handle, const float* points, uint32_t coun
       [encoder setBytes:counts length:sizeof(counts) atIndex:8];
       [encoder setBytes:&box length:sizeof(box) atIndex:9];
       [encoder setBuffer:v->gradients offset:0 atIndex:10];
+      [encoder setBytes:&v->transfer length:sizeof(Transfer) atIndex:11];
+      [encoder setBytes:&applyTransfer length:sizeof(uint32_t) atIndex:12];
       NSUInteger group=std::min(NSUInteger(128),v->samplePipeline.maxTotalThreadsPerThreadgroup);
       [encoder dispatchThreads:MTLSizeMake(count,1,1) threadsPerThreadgroup:MTLSizeMake(group,1,1)];
       [encoder endEncoding];[command commit];[command waitUntilCompleted];

@@ -24,7 +24,10 @@ from .mesh_render import transfer_colors, transform
 
 
 DEFAULT_VOLUME = {"density_reference": 1e4, "density_power": .5,
-                  "opacity_length_cm": 1e9, "floor_softening_dex": 1.0}
+                  "opacity_length_cm": 1e9, "floor_softening_dex": 1.0,
+                  "dense_fade_start": 0.0, "dense_opacity_fraction": 1.0}
+RECONSTRUCTIONS = {"piecewise_constant": 0, "continuous": 1, "linear": 2,
+                   "continuous_linear": 3}
 
 
 def volume_options(params: dict) -> dict:
@@ -37,9 +40,17 @@ def volume_options(params: dict) -> dict:
         raise ValueError("Volume reference density and path length must be positive")
     if not 0 <= result["density_power"] <= 2 or not 0 <= result["floor_softening_dex"] <= 4:
         raise ValueError("Volume density power must be in [0,2] and floor softening in [0,4] dex")
+    if result["dense_fade_start"] < 0 or not 0 <= result["dense_opacity_fraction"] <= 1:
+        raise ValueError("Dense gas fade density must be nonnegative and opacity fraction in [0,1]")
     result["reconstruction"] = params.get("volume", {}).get("reconstruction", "linear")
-    if result["reconstruction"] not in ("continuous", "piecewise_constant", "linear"):
-        raise ValueError("Volume reconstruction must be continuous, linear, or piecewise_constant")
+    if result["reconstruction"] not in RECONSTRUCTIONS:
+        raise ValueError("Unknown volume reconstruction")
+    result["transfer_stage"] = params.get("volume", {}).get("transfer_stage", "before_reconstruction")
+    result["range_behavior"] = params.get("volume", {}).get("range_behavior", "hide")
+    if result["transfer_stage"] not in ("before_reconstruction", "after_reconstruction"):
+        raise ValueError("Invalid volume transfer stage")
+    if result["range_behavior"] not in ("hide", "clamp"):
+        raise ValueError("Invalid volume colour range behavior")
     return result
 
 
@@ -52,6 +63,9 @@ def extinction(density, visible, density_floor: float, opacity: float,
         if density_floor > 0 and options["floor_softening_dex"] > 0:
             ramp = np.clip(np.log10(rho / density_floor) / options["floor_softening_dex"], 0, 1)
             support = ramp * ramp * (3 - 2 * ramp)
+        if options.get("dense_fade_start", 0) > 0:
+            ramp = np.clip(np.log10(rho/options["dense_fade_start"]), 0, 1)
+            support *= 1-(1-options.get("dense_opacity_fraction", 1))*ramp*ramp*(3-2*ramp)
         optical_depth = -math.log(max(1-opacity, 1e-3))
         value = optical_depth * (rho / options["density_reference"]) ** options["density_power"]
         value *= radius_cm / options["opacity_length_cm"] * support
@@ -95,7 +109,7 @@ class MetalVolume:
         self.library.av_create.restype = pointer
         self.library.av_device.argtypes = [pointer]
         self.library.av_device.restype = C.c_char_p
-        self.library.av_fields.argtypes = [pointer, pointer, pointer, C.c_float, C.c_char_p, C.c_size_t]
+        self.library.av_fields.argtypes = [pointer, pointer, pointer, C.c_float, pointer, C.c_char_p, C.c_size_t]
         self.library.av_gradient_seconds.argtypes = [pointer]
         self.library.av_gradient_seconds.restype = C.c_double
         self.library.av_gradient_fallbacks.argtypes = [pointer]
@@ -105,7 +119,7 @@ class MetalVolume:
                                            pointer, pointer, pointer, pointer,
                                            C.c_char_p, C.c_size_t]
         self.library.av_sample_fields.argtypes = [pointer, pointer, C.c_uint32, C.c_float, C.c_uint32,
-                                                  pointer, C.c_char_p, C.c_size_t]
+                                                  C.c_uint32, pointer, C.c_char_p, C.c_size_t]
         self.library.av_close.argtypes = [pointer]
         self.error = C.create_string_buffer(4096)
         n, edges = int(owner.header["num_cells"]), int(owner.header["num_edges"])
@@ -135,27 +149,40 @@ class MetalVolume:
         self.capabilities = (f"Native Metal compute\nDevice: {self.device}\n"
                              f"macOS: {platform.mac_ver()[0]}\nArchitecture: {platform.machine()}\n"
                              "Geometry: full native v052 neighbour planes\n"
-                             "Reconstruction: limited linear field, original cells, or legacy compact Shepard\n"
+                             "Reconstruction: continuous limited-gradient blend, limited linear field, original cells, or legacy compact Shepard\n"
+                             "Transfer: physical fields first or legacy coefficient interpolation\n"
                              "Compositing: physical segment lengths, linear-light display transfer\n"
                              "Renderer fallback: none\nGradient fallback: zero slope (reported)\n")
 
-    def upload_transfer(self, fields: np.ndarray, palette: np.ndarray):
+    def upload_transfer(self, fields: np.ndarray, palette: np.ndarray, transfer=None):
         fields = np.ascontiguousarray(fields, dtype=np.float32)
         palette = np.ascontiguousarray(palette, dtype=np.float32)
         if fields.shape != (len(self.positions), 2) or palette.shape != (512, 4):
             raise ValueError("Native volume transfer buffer shape mismatch")
         if not np.all(np.isfinite(fields[:, 1])) or np.any(fields[:, 1] < 0):
             raise ValueError("Native volume extinction must be finite and nonnegative")
+        transfer = np.zeros(12, np.float32) if transfer is None else np.ascontiguousarray(transfer, dtype=np.float32)
+        if transfer.shape != (12,) or not np.all(np.isfinite(transfer)):
+            raise ValueError("Native volume transfer parameters must be twelve finite values")
+        if transfer[8] and not (transfer[1] > transfer[0] and transfer[2] > 0 and
+                                transfer[4] >= 0 and transfer[5] >= 0 and transfer[6] >= 0 and transfer[7] >= 0):
+            raise ValueError("Invalid field-first transfer domain")
+        finite_color = fields[np.isfinite(fields[:, 0]), 0]
+        bounds = [finite_color.min() if finite_color.size else 0,
+                  finite_color.max() if finite_color.size else 0,
+                  fields[:, 1].min(), fields[:, 1].max()]
+        transfer = np.concatenate((transfer, np.asarray(bounds, dtype=np.float32)))
         if self.library.av_fields(self.handle, fields.ctypes.data, palette.ctypes.data,
                                   self.owner.header["position_unit_cm"]/self.owner.meta["display_radius_cm"],
+                                  transfer.ctypes.data,
                                   self.error, len(self.error)):
             raise ValueError(self.error.value.decode())
         self.gradient_seconds = self.library.av_gradient_seconds(self.handle)
         self.gradient_fallbacks = self.library.av_gradient_fallbacks(self.handle)
 
-    def sample_fields(self, points: np.ndarray, reconstruction="continuous") -> np.ndarray:
-        """Sample the GPU display reconstruction in normalized scene coordinates."""
-        if reconstruction not in ("continuous", "piecewise_constant", "linear"):
+    def sample_fields(self, points: np.ndarray, reconstruction="continuous", *, apply_transfer=False) -> np.ndarray:
+        """Sample uploaded fields at normalized scene coordinates, optionally mapping them to colour/extinction."""
+        if reconstruction not in RECONSTRUCTIONS:
             raise ValueError("Invalid volume reconstruction")
         points = np.asarray(points, dtype=np.float32)
         if points.ndim != 2 or points.shape[1] != 3 or not 0 < len(points) <= 1000000:
@@ -167,7 +194,7 @@ class MetalVolume:
         result = np.empty((len(points), 2), np.float32)
         if self.library.av_sample_fields(self.handle, queries.ctypes.data, len(points),
                      self.box_cm/self.owner.meta["display_radius_cm"],
-                     {"piecewise_constant": 0, "continuous": 1, "linear": 2}[reconstruction], result.ctypes.data,
+                     RECONSTRUCTIONS[reconstruction], int(apply_transfer), result.ctypes.data,
                      self.error, len(self.error)):
             raise ValueError(self.error.value.decode())
         if not np.all(np.isfinite(result[:, 1])) or np.any(result[:, 1] < 0):
@@ -178,7 +205,7 @@ class MetalVolume:
               reconstruction: str = "piecewise_constant", cell_samples: int = 1):
         if width <= 0 or height <= 0 or width > 1920 or height > 1200 or subpixels not in (1, 4):
             raise ValueError("Volume viewport must be at most 1920 by 1200 with 1 or 4 rays per pixel")
-        if reconstruction not in ("continuous", "piecewise_constant", "linear") or cell_samples not in (1, 2):
+        if reconstruction not in RECONSTRUCTIONS or cell_samples not in (1, 2):
             raise ValueError("Invalid volume reconstruction or cell sampling")
         forward, up = np.asarray(camera["forward"]), np.asarray(camera["up"])
         right = np.cross(forward, up)
@@ -192,7 +219,7 @@ class MetalVolume:
         stats = np.empty((height, width, subpixels, 4), dtype=np.uint32)
         gpu_seconds = C.c_double()
         if self.library.av_render(self.handle, width, height, subpixels, 8192,
-                                  {"piecewise_constant": 0, "continuous": 1, "linear": 2}[reconstruction], cell_samples, uniform.ctypes.data,
+                                  RECONSTRUCTIONS[reconstruction], cell_samples, uniform.ctypes.data,
                                   pixels.ctypes.data, stats.ctypes.data, C.byref(gpu_seconds),
                                   self.error, len(self.error)):
             raise ValueError(self.error.value.decode())
@@ -209,7 +236,7 @@ class MetalVolume:
                   "zero_length_transitions": int(stats[..., 2].sum()),
                   "subpixel_samples": subpixels, "reconstruction": reconstruction,
                   "cell_samples": cell_samples if reconstruction != "piecewise_constant" else 1,
-                  "interpolation": {"continuous": "compact_shepard_8", "linear": "limited_least_squares", "piecewise_constant": "none"}[reconstruction],
+                  "interpolation": {"continuous": "compact_shepard_8", "linear": "limited_least_squares", "piecewise_constant": "none", "continuous_linear": "blended_limited_gradients_8"}[reconstruction],
                   "gradient_setup_gpu_seconds": self.gradient_seconds,
                   "gradient_fallback_cells": self.gradient_fallbacks}
         return pixels.mean(axis=2), report
@@ -236,17 +263,38 @@ class MetalVolume:
             owner.progress("Updating field colours and density transparency")
             values = owner.values(style["channel"], params.get("derived_channels", []))
             scalar = transform(values, style)
-            visible = np.isfinite(scalar) & (values >= low) & (values <= high)
+            visible = np.isfinite(scalar)
+            if options["range_behavior"] == "hide":
+                visible &= (values >= low) & (values <= high)
             fields = np.zeros((len(self.positions), 2), dtype=np.float32)
             fields[:, 0] = np.nan
-            fields[owner.selected, 0] = (scalar-bounds[0]) / (bounds[1]-bounds[0])
-            fields[owner.selected, 1] = extinction(owner.channels["density"], visible, floor,
-                                                  opacity, owner.meta["display_radius_cm"], options)
-            self.visible_indices = np.flatnonzero(fields[:, 1] > 0)
+            coefficient = extinction(owner.channels["density"], visible, floor,
+                                      opacity, owner.meta["display_radius_cm"], options)
+            self.visible_indices = owner.selected[coefficient > 0]
+            field_transfer = None
+            if options["transfer_stage"] == "after_reconstruction":
+                channel_scale = max(abs(low), abs(high), float(style.get("linthresh", 1)), 1e-30)
+                scaled_values = np.asarray(values, dtype=np.float64) / channel_scale
+                finite = np.isfinite(scaled_values)
+                if np.any(np.abs(scaled_values[finite]) > np.finfo(np.float32).max):
+                    raise ValueError("Physical field exceeds the float32 reconstruction range")
+                fields[owner.selected, 0] = np.where(finite, scaled_values, np.nan)
+                fields[owner.selected, 1] = owner.channels["density"] / options["density_reference"]
+                field_transfer = np.array([
+                    low/channel_scale, high/channel_scale, float(style.get("linthresh", 1))/channel_scale,
+                    {"linear": 0, "log10": 1, "symlog": 2}[style.get("scale_mode", "linear")],
+                    floor/options["density_reference"], options["floor_softening_dex"], options["density_power"],
+                    -math.log(max(1-opacity, 1e-3))*owner.meta["display_radius_cm"]/options["opacity_length_cm"],
+                    1, options["range_behavior"] == "hide",
+                    options["dense_fade_start"]/options["density_reference"],
+                    options["dense_opacity_fraction"]], dtype=np.float32)
+            else:
+                fields[owner.selected, 0] = (scalar-bounds[0]) / (bounds[1]-bounds[0])
+                fields[owner.selected, 1] = coefficient
             colors = transfer_colors(style).astype(np.float32) / 255
             colors[:, :3] = np.where(colors[:, :3] <= .04045, colors[:, :3] / 12.92,
                                      ((colors[:, :3] + .055) / 1.055) ** 2.4)
-            self.upload_transfer(fields, colors)
+            self.upload_transfer(fields, colors, field_transfer)
             self.transfer_key = key
         width, height = int(params.get("width", 960)), int(params.get("height", 600))
         if width <= 0 or height <= 0:
@@ -274,9 +322,11 @@ class MetalVolume:
                   "scene_sha256": owner.meta["sha256"], "native_cell_count": int(owner.header["num_cells"]),
                   "selected_cells": int(len(self.visible_indices)), "width": width, "height": height,
                   "render_seconds": time.monotonic()-started, "setup_seconds": self.setup_seconds,
-                  "backend": "native_metal_voronoi_volume_v003", "device": self.device,
+                  "backend": "native_metal_voronoi_volume_v004", "device": self.device,
                   "representation": "volume", "density_floor": floor, "volume": options,
-                  "reconstruction_fields": ["transformed_colour_scalar", "display_extinction"],
+                  "reconstruction_fields": (["physical_channel_scaled", "gas_density_scaled"]
+                                             if options["transfer_stage"] == "after_reconstruction"
+                                             else ["transformed_colour_scalar", "display_extinction"]),
                   "ruler_kind": "projected",
                   "early_termination_transmittance": .001, "camera": owner.camera, "style": style}
         return output.getvalue(), report

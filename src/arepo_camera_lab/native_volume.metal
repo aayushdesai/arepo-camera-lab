@@ -5,6 +5,7 @@ using namespace metal;
 struct Edge { packed_float3 delta; uint neighbor; };
 struct KDNode { float split; uint axis, left, right, first, last, pad0, pad1; };
 struct Uniforms { uint4 shape; float4 target, forward, right, up; uint4 scene; };
+struct Transfer {float4 domain, density, flags, bounds;};
 struct Gradient {float4 scalar, extinction, bounds;};
 struct Fit {float3 a,b,c,rhs;uint count;};
 
@@ -71,6 +72,38 @@ float2 linearFields(float3 relative,uint cell,device const float2* fields,
   return value;
 }
 
+// Optional field-first transfer. Input is (channel/channel_scale, rho/rho_ref).
+// Interpolation therefore precedes nonlinear colour and extinction mapping.
+float fieldTransform(float value,constant Transfer& transfer) {
+  if(transfer.domain.w<0.5f)return value;
+  if(transfer.domain.w<1.5f)return value>0?log10(value):NAN;
+  return sign(value)*log10(1+abs(value)/transfer.domain.z);
+}
+
+float2 displayTransfer(float2 field,constant Transfer& transfer) {
+  if(transfer.flags.x<0.5f)return field;
+  // Preserve invalid-density/interpolation failures for the caller's error gate.
+  if(!isfinite(field.y)||field.y<0)return float2(NAN,NAN);
+  if(!isfinite(field.x)||field.y==0)return float2(NAN,0);
+  if(transfer.flags.y>0.5f && (field.x<transfer.domain.x||field.x>transfer.domain.y))
+    return float2(NAN,0);
+  float scalar=fieldTransform(field.x,transfer);
+  if(!isfinite(scalar))return float2(NAN,0);
+  float lower=fieldTransform(transfer.domain.x,transfer),upper=fieldTransform(transfer.domain.y,transfer);
+  scalar=(scalar-lower)/(upper-lower);
+  float support=field.y>=transfer.density.x?1.0f:0.0f;
+  if(transfer.density.x>0 && transfer.density.y>0) {
+    float ramp=clamp(log10(field.y/transfer.density.x)/transfer.density.y,0.0f,1.0f);
+    support=ramp*ramp*(3-2*ramp);
+  }
+  if(transfer.flags.z>0) {
+    float ramp=clamp(log10(field.y/transfer.flags.z),0.0f,1.0f);
+    support*=1-(1-transfer.flags.w)*ramp*ramp*(3-2*ramp);
+  }
+  float extinction=transfer.density.w*pow(field.y,transfer.density.z)*support;
+  return float2(scalar,extinction);
+}
+
 struct NearestNine { float distance[9]; uint cell[9]; };
 
 // The k nearest sites form a connected subgraph of a Voronoi neighbour graph.
@@ -78,7 +111,9 @@ struct NearestNine { float distance[9]; uint cell[9]; };
 // are settled; the ninth site sets the zero-weight support boundary.
 float2 continuousFields(float3 point, float box, device const float4* positions,
                         device const uint* offsets, device const Edge* edges,
-                        device const float2* fields,uint seed,uint count) {
+                        device const float2* fields,uint seed,uint count,
+                        device const Gradient* gradients,bool blendGradients,
+                        constant Transfer& transfer) {
   NearestNine nearest;bool expanded[9];
   for(uint k=0;k<9;k++){nearest.distance[k]=INFINITY;nearest.cell[k]=0xffffffff;expanded[k]=false;}
   float3 d=positions[seed].xyz-point;d-=round(d/box)*box;
@@ -113,12 +148,24 @@ float2 continuousFields(float3 point, float box, device const float4* positions,
   for(uint k=0;k<9;k++)if(nearest.cell[k]!=0xffffffff) {
     float d=sqrt(nearest.distance[k]);
     float a=closest/d-closest/radius,weight=a*a;
-    float2 value=fields[nearest.cell[k]];
-    if(isfinite(value.x)&&value.y>0){sum.x+=weight*value.x;colorWeight+=weight;}
+    uint id=nearest.cell[k];
+    float3 relative=point-positions[id].xyz;relative-=round(relative/box)*box;
+    float2 value=fields[id];
+    if(blendGradients) {
+      // Blend local linear polynomials, not independently clipped cell fields.
+      // Fixed global bounds preserve continuity as the support changes.
+      value+=float2(dot(gradients[id].scalar.xyz,relative),dot(gradients[id].extinction.xyz,relative));
+    }
+    if(isfinite(value.x)&&fields[id].y>0){sum.x+=weight*value.x;colorWeight+=weight;}
     sum.y+=weight*value.y;total+=weight;
   }
   if(!(total>0))return fields[nearest.cell[0]];
-  return float2(colorWeight>0?sum.x/colorWeight:NAN,sum.y/total);
+  float2 result=float2(colorWeight>0?sum.x/colorWeight:NAN,sum.y/total);
+  if(blendGradients) {
+    result.x=isfinite(result.x)?clamp(result.x,transfer.bounds.x,transfer.bounds.y):NAN;
+    result.y=clamp(result.y,transfer.bounds.z,transfer.bounds.w);
+  }
+  return result;
 }
 
 uint nearestCell(float3 point, device const float4* positions,
@@ -176,13 +223,16 @@ kernel void sampleFields(device const float4* positions [[buffer(0)]],
                           constant uint4& counts [[buffer(8)]],
                           constant float& box [[buffer(9)]],
                           device const Gradient* gradients [[buffer(10)]],
+                          constant Transfer& transfer [[buffer(11)]],
+                          constant uint& applyTransfer [[buffer(12)]],
                           uint index [[thread_position_in_grid]]) {
   if(index>=counts.x)return;
   float3 point=points[index].xyz;
   uint seed=periodicNearest(point,box,positions,nodes,order,counts.z);
   float3 relative=point-positions[seed].xyz;relative-=round(relative/box)*box;
-  output[index]=counts.w==2?linearFields(relative,seed,fields,gradients):
-    counts.w==1?continuousFields(point,box,positions,offsets,edges,fields,seed,counts.y):fields[seed];
+  float2 result=counts.w==2?linearFields(relative,seed,fields,gradients):
+    (counts.w==1||counts.w==3)?continuousFields(point,box,positions,offsets,edges,fields,seed,counts.y,gradients,counts.w==3,transfer):fields[seed];
+  output[index]=applyTransfer?displayTransfer(result,transfer):result;
 }
 
 // Compensated accumulation prevents many short steps losing their distance
@@ -205,6 +255,7 @@ kernel void nativeVolume(device const float4* positions [[buffer(0)]],
                          device uint4* statistics [[buffer(8)]],
                          constant Uniforms& u [[buffer(9)]],
                          device const Gradient* gradients [[buffer(10)]],
+                         constant Transfer& transfer [[buffer(11)]],
                          uint index [[thread_position_in_grid]]) {
   uint width=u.shape.x,height=u.shape.y,spp=u.shape.z;
   if(index>=width*height*spp)return;
@@ -258,7 +309,8 @@ kernel void nativeVolume(device const float4* positions [[buffer(0)]],
         float fraction=samples==2?(sample==0?0.2113248654f:0.7886751346f):0.5f;
         float3 point=fma(distance.x,direction,origin)+(distance.y+length*fraction)*direction;
         float2 field=u.scene.z==2?linearFields(relative+length*fraction*direction,cell,fields,gradients):
-          u.scene.z==1?continuousFields(point,box,positions,offsets,edges,fields,cell,u.scene.x):fields[cell];
+          (u.scene.z==1||u.scene.z==3)?continuousFields(point,box,positions,offsets,edges,fields,cell,u.scene.x,gradients,u.scene.z==3,transfer):fields[cell];
+        field=displayTransfer(field,transfer);
         if(!isfinite(field.y)||field.y<0){status=64;break;}
         if(field.y>0 && isfinite(field.x)) {
           float tau=min(80.0f,field.y*length/samples);

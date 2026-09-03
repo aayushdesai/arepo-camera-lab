@@ -12,15 +12,52 @@
       "fit_visible": true,
       "parameters": {
         "representation": "volume",
-        "camera": {"target": [0, 0, 0], "forward": [0.9, 0, -0.4], "up": [0, 0, 1], "scale": 0.1},
+        "camera": {
+          "target": [
+            0,
+            0,
+            0
+          ],
+          "forward": [
+            0.9,
+            0,
+            -0.4
+          ],
+          "up": [
+            0,
+            0,
+            1
+          ],
+          "scale": 0.1
+        },
         "style": {
-          "channel": "rotational_fraction", "scale_mode": "linear", "low": 0, "high": 1,
-          "linthresh": 1, "palette": "copper_blue", "gamma": 1,
-          "saturation": 1, "brightness": 1, "opacity": 0.72
+          "channel": "rotational_fraction",
+          "scale_mode": "linear",
+          "low": 0,
+          "high": 1,
+          "linthresh": 1,
+          "palette": "copper_blue",
+          "gamma": 1,
+          "saturation": 1,
+          "brightness": 1,
+          "opacity": 0.72
         },
         "density_floor": 100,
-        "volume": {"density_reference": 10000, "density_power": 0.5, "opacity_length_cm": 1000000000, "floor_softening_dex": 1, "reconstruction": "linear"},
-        "subpixel_samples": 4, "cell_samples": 2, "width": 1440, "height": 960
+        "volume": {
+          "density_reference": 10000,
+          "density_power": 0.5,
+          "opacity_length_cm": 1000000000,
+          "floor_softening_dex": 1,
+          "reconstruction": "continuous_linear",
+          "transfer_stage": "after_reconstruction",
+          "range_behavior": "clamp",
+          "dense_fade_start": 0,
+          "dense_opacity_fraction": 1
+        },
+        "subpixel_samples": 4,
+        "cell_samples": 2,
+        "width": 1440,
+        "height": 960
       }
     },
     {
@@ -30,15 +67,52 @@
       "fit_visible": true,
       "parameters": {
         "representation": "volume",
-        "camera": {"target": [0, 0, 0], "forward": [0.9, 0, -0.4], "up": [0, 0, 1], "scale": 0.1},
+        "camera": {
+          "target": [
+            0,
+            0,
+            0
+          ],
+          "forward": [
+            0.9,
+            0,
+            -0.4
+          ],
+          "up": [
+            0,
+            0,
+            1
+          ],
+          "scale": 0.1
+        },
         "style": {
-          "channel": "outward_axial_velocity", "scale_mode": "symlog", "low": -200000000, "high": 200000000,
-          "linthresh": 1000000, "palette": "blue_red", "gamma": 1,
-          "saturation": 1, "brightness": 1, "opacity": 0.72
+          "channel": "outward_axial_velocity",
+          "scale_mode": "symlog",
+          "low": -200000000,
+          "high": 200000000,
+          "linthresh": 1000000,
+          "palette": "blue_red",
+          "gamma": 1,
+          "saturation": 1,
+          "brightness": 1,
+          "opacity": 0.72
         },
         "density_floor": 0.01,
-        "volume": {"density_reference": 10000, "density_power": 0.5, "opacity_length_cm": 1000000000, "floor_softening_dex": 1, "reconstruction": "linear"},
-        "subpixel_samples": 4, "cell_samples": 2, "width": 1440, "height": 960
+        "volume": {
+          "density_reference": 10000,
+          "density_power": 0.5,
+          "opacity_length_cm": 1000000000,
+          "floor_softening_dex": 1,
+          "reconstruction": "continuous_linear",
+          "transfer_stage": "after_reconstruction",
+          "range_behavior": "clamp",
+          "dense_fade_start": 0,
+          "dense_opacity_fraction": 1
+        },
+        "subpixel_samples": 4,
+        "cell_samples": 2,
+        "width": 1440,
+        "height": 960
       }
     }
   ]

@@ -606,11 +606,17 @@ body.capture-mode #view, body.capture-mode #meshImage { left: 0; width: 100vw; h
       <label for="volumeOpacityLength">Reference path length (km)</label><input id="volumeOpacityLength" type="number" value="10000" min="1e-30" step="any">
       <label for="volumeDensityPower">Density weighting</label><input id="volumeDensityPower" type="number" value="0.5" min="0" max="2" step="0.1">
       <label for="volumeFloorSoftening">Density threshold transition (dex)</label><input id="volumeFloorSoftening" type="number" value="1" min="0" max="4" step="0.1">
+      <label for="volumeDenseFadeStart">Fade dense gas above (g cm⁻³; 0 disables)</label><input id="volumeDenseFadeStart" type="number" value="0" min="0" step="any">
+      <label for="volumeDenseOpacityFraction">Dense gas opacity fraction</label><input id="volumeDenseOpacityFraction" type="number" value="1" min="0" max="1" step="0.05">
+      <div class="meta">A fraction below 1 reveals material behind dense gas. The fade spans a factor of 10 in density.</div>
+      <div class="check"><input id="volumePhysicalTransfer" type="checkbox" checked><label for="volumePhysicalTransfer">Compute opacity from reconstructed density</label></div>
+      <div class="check"><input id="volumeClampColorRange" type="checkbox" checked><label for="volumeClampColorRange">Keep opacity outside the colour range</label></div>
       <div class="meta">Opacity applies at this density over this path length. Longer paths make the view more transparent. These are display settings.</div>
     </details>
-    <label for="volumeReconstruction">Field reconstruction</label><select id="volumeReconstruction"><option value="linear">Linear field</option><option value="piecewise_constant">Original cell values</option><option value="continuous">Legacy smoothing · slow</option></select>
+    <label for="volumeReconstruction">Field reconstruction</label><select id="volumeReconstruction"><option value="continuous_linear">Continuous field</option><option value="linear">Linear field · fast</option><option value="piecewise_constant">Original cell values</option><option value="continuous">Legacy smoothing · slow</option></select>
     <div class="meta">Smooth field interpolates between native cells. It does not add simulation resolution.</div>
-    <label for="volumeQuality">Image quality</label><select id="volumeQuality"><option value="4">High · antialiased</option><option value="1">Fast</option></select>
+    <label for="volumeQuality">Image quality</label><select id="volumeQuality"><option value="1">Standard</option><option value="4">High · antialiased</option></select>
+    <div class="meta">Continuous reconstruction takes longer. A fast preview appears while moving the camera; the selected reconstruction follows when it stops.</div>
   </div>
   <button id="meshFit">Fit visible mesh</button>
   <div class="check"><input id="meshEdges" type="checkbox"><label for="meshEdges">Show cell edges</label></div>

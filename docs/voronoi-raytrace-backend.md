@@ -33,7 +33,16 @@ display-box entrance. All traversed cells are available, including ones that
 make no visible contribution. The **Original cell values** mode holds each
 exported field constant within its native cell.
 
-The default **Linear field** mode uses inverse-distance-squared weighted
+The fresh-viewer default **Continuous field** blends the local linear
+predictions described below with compact spatial weights. Original generator
+values are retained; the blend stays continuous across the old cell boundaries
+and is clipped to the full uploaded field range. Its slopes are limited locally,
+but its final values are not guaranteed to stay within each cell's immediate
+neighbour range. It is a display reconstruction, not a conservative AREPO
+reconstruction. The [field-reconstruction notes](field-reconstruction-work.md)
+describe the algorithm and validation.
+
+The **Linear field** mode uses inverse-distance-squared weighted
 least-squares gradients from the stored native neighbour displacements. It fits
 the transformed colour scalar and display extinction separately. A slope
 limiter constrains extrapolation towards neighbour generators; each sampled
@@ -74,9 +83,11 @@ interpreted using the particular simulation's actual refinement/derefinement
 rules, not an assumed uniform mass per cell or a density-only size law. See the
 [checked refinement context for these two scenes](run-refinement-context.md).
 
-High quality uses four deterministic subpixel rays and two ordered quadrature
-samples per crossed cell. Fast interaction uses one of each. No time-varying
-sampling noise or post-render image blur is introduced.
+Continuous reconstruction uses two ordered quadrature samples per crossed
+cell. Standard quality uses one deterministic ray per pixel; high quality uses
+four. Fast interaction uses linear reconstruction on a smaller frame with one
+ray and one cell sample, then restores the selected reconstruction. No
+time-varying sampling noise or post-render image blur is introduced.
 
 Gas density is the exported mass density in g cm^-3, decoded as
 `10**(stored_density - 10)` for these cgs v052 scenes. The previous "density
@@ -88,6 +99,18 @@ hidden. The point budget never subsamples the native mesh. Face picks preserve
 the native cell index and serialize particle IDs as strings for JavaScript.
 
 ## Volume transparency
+
+Fresh viewers upload the physical channel and density, scaled to float32
+ranges. The chosen interpolation precedes the colour transform, density power,
+and visibility taper. `transfer_stage: before_reconstruction` preserves the
+legacy transfer-coefficient interpolation; saved states missing the setting
+retain that behaviour. `range_behavior: clamp` retains gas outside the colour
+range and clamps the palette; `hide` preserves the original range filter.
+
+An optional `dense_fade_start` reduces opacity smoothly over the next density
+decade to `dense_opacity_fraction` times the otherwise chosen coefficient. The
+default start is 0 (disabled), and the default fraction is 1. This is an
+explicit display selection, not a disk/core classifier or modified density.
 
 The transfer is an illustrative display model, not a calibrated synthetic
 observation or the production ArepoRT optical model. Field colour and density
@@ -184,8 +207,9 @@ is ready. Volume-only use creates no VTK/OpenGL window.
 `capture-mesh` consumes a hash-bound JSON config. Set each frame's
 `parameters.representation` to `volume` or `faces` (the API default remains
 `faces` for existing callers). Volume settings live under `parameters.volume`;
-`volume.reconstruction` is `linear` (default), `piecewise_constant`, or
-`continuous` (legacy compact Shepard).
+`volume.reconstruction` accepts `continuous_linear`, `linear`,
+`piecewise_constant`, or `continuous` (legacy compact Shepard). Omitted API
+settings retain `linear`; a fresh browser selects `continuous_linear`.
 `subpixel_samples` is 1 or 4 and `cell_samples` is 1 or 2 for interpolation. See the [volume example](../examples/native-volume-capture.example.json)
 and [face example](../examples/native-capture.example.json).
 

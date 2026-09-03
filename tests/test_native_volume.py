@@ -15,13 +15,14 @@ from arepo_camera_lab import mesh_render, server, viewer, volume_render
 
 
 def lattice(path: Path, invalid=False, translation=0.0, sites=(.5, 1.5, 2.5)):
-    """27 unit Voronoi cubes, including explicit periodic ghost neighbours."""
-    n = 27
+    """A periodic cubic lattice, including explicit periodic ghost neighbours."""
+    side_count = len(sites)
+    n = side_count**3
     header = viewer.HEADER_STRUCT.pack(
         viewer.SCENE_MAGIC.ljust(16, b"\0"), 5, 0x01020304, 208, 52, 16,
         72, 1, 1, 1, 1, 1, viewer.REQUIRED_FLAGS, n, n*6, 0, 0, 0,
-        3., 10., 0., 0., 0., 2., 1., 1., 1., 155.0146484375, bytes(24))
-    xyz = list(itertools.product(range(3), repeat=3))
+        float(side_count), 10., 0., 0., 0., 2., 1., 1., 1., 155.0146484375, bytes(24))
+    xyz = list(itertools.product(range(side_count), repeat=3))
     lookup = {p: i for i, p in enumerate(xyz)}
     cells = np.zeros(n, dtype=viewer.CELL_DTYPE)
     cells["position"] = np.asarray(sites)[np.array(xyz)] + translation
@@ -34,9 +35,9 @@ def lattice(path: Path, invalid=False, translation=0.0, sites=(.5, 1.5, 2.5)):
                 j = i*6+axis*2+side
                 neighbor = list(p)
                 neighbor[axis] += sign
-                ghost = not 0 <= neighbor[axis] < 3
-                neighbor[axis] %= 3
-                edges["delta"][j, axis] = sites[neighbor[axis]]-sites[p[axis]]+(3*sign if ghost else 0)
+                ghost = not 0 <= neighbor[axis] < side_count
+                neighbor[axis] %= side_count
+                edges["delta"][j, axis] = sites[neighbor[axis]]-sites[p[axis]]+(side_count*sign if ghost else 0)
                 edges["neighbor"][j] = (lookup[tuple(neighbor)]+1) | (0x80000000 if ghost else 0)
     if invalid:
         edges["neighbor"][lookup[(1, 1, 1)]*6+4] = 0
@@ -46,7 +47,7 @@ def lattice(path: Path, invalid=False, translation=0.0, sites=(.5, 1.5, 2.5)):
         handle.write((np.arange(n+1, dtype="<u8")*6).tobytes())
         handle.write(edges.tobytes())
     return {"scene_path": str(path), "scene_sha256": viewer.sha256(path), "snapshot": 31,
-            "scene_meta": {"center_cm": [2*(translation+1.5)]*3, "axis": [0, 0, 1],
+            "scene_meta": {"center_cm": [2*(translation+side_count/2)]*3, "axis": [0, 0, 1],
                            "display_radius_cm": 2}}
 
 
@@ -67,7 +68,8 @@ class VolumeTransferTest(unittest.TestCase):
 
     def test_bad_transparency_options_and_nonfinite_fields(self):
         for key, value in (("density_reference", 0), ("density_power", -1),
-                           ("opacity_length_cm", float("nan")), ("floor_softening_dex", 5)):
+                           ("opacity_length_cm", float("nan")), ("floor_softening_dex", 5),
+                           ("dense_fade_start", -1), ("dense_opacity_fraction", 1.1)):
             with self.assertRaises(ValueError):
                 volume_render.volume_options({"volume": {key: value}})
         with self.assertRaisesRegex(ValueError, "reconstruction"):
@@ -76,6 +78,15 @@ class VolumeTransferTest(unittest.TestCase):
         result = volume_render.extinction([float("nan"), 1.], np.array([False, True]), 0, .5, 2., options)
         self.assertEqual(result[0], 0)
         self.assertGreater(result[1], 0)
+
+    def test_dense_gas_opacity_fraction_has_a_smooth_one_dex_transition(self):
+        rho = np.array([10., math.sqrt(1000.), 100., 1000.])
+        base = volume_render.extinction(rho, np.ones(4, bool), 0, .5, 2,
+                                        volume_render.volume_options({}))
+        options = volume_render.volume_options({"volume": {"dense_fade_start": 10,
+                                                            "dense_opacity_fraction": .2}})
+        faded = volume_render.extinction(rho, np.ones(4, bool), 0, .5, 2, options)
+        np.testing.assert_allclose(faded/base, [1, .6, .2, .2], rtol=2e-6)
 
 
 @unittest.skipUnless(sys.platform == "darwin" and os.environ.get("AREPO_TEST_NATIVE_GRAPHICS") == "1",
@@ -105,7 +116,7 @@ class NativeMetalTest(unittest.TestCase):
         self.volume.upload_transfer(fields, palette)
         background = np.array([.00212469, .00334654, .00477695])
         for mode, samples in (("piecewise_constant", 1), ("continuous", 1), ("continuous", 2),
-                               ("linear", 1), ("linear", 2)):
+                               ("linear", 1), ("linear", 2), ("continuous_linear", 1), ("continuous_linear", 2)):
             for direction, chord in (((0, 0, 1), 3), ((1, 0, 1), 3*math.sqrt(2)), ((0, 0, -1), 3)):
                 image, report = self.volume.trace(self.camera(direction), 1, 1, 1, mode, samples)
                 transmission = math.exp(-.25*chord)
@@ -147,6 +158,70 @@ class NativeMetalTest(unittest.TestCase):
                     neighbors.append(lookup[tuple(p)])
             self.assertTrue(np.all(row >= fields[neighbors].min(axis=0)-1e-6))
             self.assertTrue(np.all(row <= fields[neighbors].max(axis=0)+1e-6))
+
+    def test_continuous_gradients_reproduce_affine_fields_and_cross_cell_faces(self):
+        owner = mesh_render.NativeMeshRenderer(lattice(self.root/"wide-affine.bin", sites=(.5, 1.5, 2.5, 3.5, 4.5)), self.root)
+        volume = volume_render.MetalVolume(owner)
+        try:
+            positions = volume.positions[:, :3]
+            slope = np.array([[.12, -.06, .07], [.05, .02, -.01]], np.float32)
+            offset = np.array([.5, .3], np.float32)
+            fields = offset + positions @ slope.T
+            volume.upload_transfer(fields, np.ones((512, 4), np.float32))
+            points = np.random.default_rng(1761).uniform(-.45, .45, (512, 3)).astype(np.float32)
+            np.testing.assert_allclose(volume.sample_fields(points, "continuous_linear"),
+                                       offset+points@slope.T, atol=7e-7, rtol=2e-6)
+            np.testing.assert_array_equal(volume.sample_fields(positions, "continuous_linear"), fields)
+            # An arbitrary field exposes actual jumps in the old limited mode.
+            fields = np.random.default_rng(8621).uniform(.01, 1, (125, 2)).astype(np.float32)
+            volume.upload_transfer(fields, np.ones((512, 4), np.float32))
+            left, right = points.copy(), points.copy()
+            left[:, 0], right[:, 0] = .5-1e-5, .5+1e-5
+            difference = volume.sample_fields(left, "continuous_linear")-volume.sample_fields(right, "continuous_linear")
+            self.assertLess(float(np.max(np.abs(difference))), 1e-4)
+            old_jump = volume.sample_fields(left, "linear")-volume.sample_fields(right, "linear")
+            self.assertGreater(float(np.max(np.abs(old_jump))), .1)
+            values = volume.sample_fields(points, "continuous_linear")
+            self.assertTrue(np.all(values >= fields.min(axis=0)-1e-6))
+            self.assertTrue(np.all(values <= fields.max(axis=0)+1e-6))
+        finally:
+            volume.close(); owner.close()
+
+    def test_physical_transfer_follows_interpolation_and_respects_colour_range(self):
+        owner = mesh_render.NativeMeshRenderer(lattice(self.root/"wide-physical.bin", sites=(.5, 1.5, 2.5, 3.5, 4.5)), self.root)
+        volume = volume_render.MetalVolume(owner)
+        try:
+            positions = volume.positions[:, :3]
+            fields = np.column_stack((2+.5*positions[:, 0], 2+.5*positions[:, 0])).astype(np.float32)
+            transfer = np.array([1, 4, .1, 1, 0, 0, 2, .2, 1, 0, 0, 0], np.float32)
+            volume.upload_transfer(fields, np.ones((512, 4), np.float32), transfer)
+            points = np.array([[.3, -.1, .05], [-.2, .15, -.1]], np.float32)
+            density = 2+.5*points[:, 0]
+            actual = volume.sample_fields(points, "continuous_linear", apply_transfer=True)
+            np.testing.assert_allclose(actual[:, 0], np.log10(density)/np.log10(4), rtol=3e-6, atol=1e-6)
+            np.testing.assert_allclose(actual[:, 1], .2*density**2, rtol=3e-6)
+            # Colour limits can clamp the palette without deleting the gas.
+            transfer[1] = 1.5
+            volume.upload_transfer(fields, np.ones((512, 4), np.float32), transfer)
+            visible = volume.sample_fields(points, "continuous_linear", apply_transfer=True)
+            self.assertTrue(np.all(visible[:, 1] > 0))
+            self.assertTrue(np.all(visible[:, 0] > 1))
+            transfer[9] = 1
+            volume.upload_transfer(fields, np.ones((512, 4), np.float32), transfer)
+            hidden = volume.sample_fields(points, "continuous_linear", apply_transfer=True)
+            np.testing.assert_array_equal(hidden[:, 1], 0)
+            self.assertTrue(np.all(np.isnan(hidden[:, 0])))
+            fields[:, 0] = positions[:, 0]
+            transfer = np.array([-2, 2, .1, 2, 0, 0, 2, .2, 1, 0, 1, .1], np.float32)
+            volume.upload_transfer(fields, np.ones((512, 4), np.float32), transfer)
+            actual = volume.sample_fields(points, "continuous_linear", apply_transfer=True)
+            symlog = np.sign(points[:, 0])*np.log10(1+np.abs(points[:, 0])/.1)
+            np.testing.assert_allclose(actual[:, 0], (symlog+np.log10(21))/(2*np.log10(21)), atol=1e-6)
+            ramp = np.clip(np.log10(density), 0, 1)
+            faded = .2*density**2*(1-.9*ramp*ramp*(3-2*ramp))
+            np.testing.assert_allclose(actual[:, 1], faded, rtol=4e-6)
+        finally:
+            volume.close(); owner.close()
 
     def test_linear_gradients_use_unequal_native_spacing(self):
         owner = mesh_render.NativeMeshRenderer(lattice(self.root/"uneven-linear.bin", sites=(.05, .07, 2.7)), self.root)
@@ -211,8 +286,9 @@ class NativeMetalTest(unittest.TestCase):
         for boundary in (.5, 1.5):
             left, right = points.copy(), points.copy()
             left[:, 0], right[:, 0] = boundary-1e-5, boundary+1e-5
-            difference = self.volume.sample_fields(left)-self.volume.sample_fields(right)
-            self.assertLess(float(np.max(np.abs(difference))), 2e-4)
+            for mode in ("continuous", "continuous_linear"):
+                difference = self.volume.sample_fields(left, mode)-self.volume.sample_fields(right, mode)
+                self.assertLess(float(np.max(np.abs(difference))), 2e-4)
 
     def test_nonuniform_cell_spacing_uses_geometry_instead_of_a_density_size_law(self):
         owner = mesh_render.NativeMeshRenderer(lattice(self.root/"uneven.bin", sites=(.05, .07, 2.7)), self.root)
@@ -318,6 +394,14 @@ class NativeMetalTest(unittest.TestCase):
                 volume.trace(self.camera(), 1, 1, 1)
             with self.assertRaisesRegex(ValueError, "reconstruction failed"):
                 volume.sample_fields(np.array([[.1, 0, 0]], np.float32))
+            physical = np.tile([.5, .25], (27, 1)).astype(np.float32)
+            transfer = np.array([0, 1, 1, 0, 0, 0, 1, 1, 1, 0, 0, 1], np.float32)
+            volume.upload_transfer(physical, np.ones((512, 4), np.float32), transfer)
+            # Mapping opacity must not turn a failed neighbour search into
+            # apparently valid transparent gas.
+            with self.assertRaisesRegex(ValueError, "reconstruction failed"):
+                volume.sample_fields(np.array([[.1, 0, 0]], np.float32),
+                                     "continuous_linear", apply_transfer=True)
         finally:
             volume.close(); owner.close()
 
@@ -330,7 +414,7 @@ class NativeMetalTest(unittest.TestCase):
                   "low": .5, "high": 1.5, "palette": "copper_blue", "opacity": .5}}
         try:
             result = state.mesh_request(params)
-            self.assertEqual(result["report"]["backend"], "native_metal_voronoi_volume_v003")
+            self.assertEqual(result["report"]["backend"], "native_metal_voronoi_volume_v004")
             self.assertEqual(result["report"]["traversal_failures"], 0)
             process = state.mesh_bridge.process
             with mock.patch.object(server.session_cleanup, "archive_and_cleanup") as archive:
