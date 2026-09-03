@@ -596,13 +596,20 @@ body.capture-mode #view, body.capture-mode #meshImage { left: 0; width: 100vw; h
   <h1>Stellar Camera Lab</h1>
   <div id="sceneMeta" class="meta"></div>
   <h2>3D view</h2>
-  <label for="renderMode">Renderer</label><select id="renderMode"><option value="volume">Native cell volume · Metal</option><option value="mesh">Native cell faces · VTK</option><option value="points">Point preview</option></select>
+  <label for="renderMode">Renderer</label><select id="renderMode"><option value="volume">Native cell volume · Metal</option><option value="mesh">Native cells · faces and edges</option><option value="points">Point preview</option></select>
   <button id="comparePoints" type="button">Compare with point cloud</button>
   <div class="meta">Compare the same snapshot, camera and colour field. Density filtering and volume transparency apply to native cells only.</div>
   <label for="meshDensityFloor">Hide cells below density (g cm⁻³)</label><input id="meshDensityFloor" type="number" value="100" min="0" step="any">
   <div class="meta">Lower this to reveal diffuse material. Colour and transparency are controlled separately.</div>
+  <div id="cellControls">
+    <label for="meshOpacityMode">Cell opacity</label><select id="meshOpacityMode"><option value="density">Density through cells · Metal</option><option value="uniform">Uniform on surfaces · VTK</option></select>
+    <div id="cellDensityControls">
+      <div class="check"><input id="meshZoomOpacity" type="checkbox" checked><label for="meshZoomOpacity">Reveal on zoom</label></div>
+      <div class="meta">Original cell values and edges, with interior cells included. Zooming in fades foreground material while keeping cells near the focus visible. Fit visible mesh resets the zoom baseline. Turn this off for fixed-opacity comparisons.</div>
+    </div>
+  </div>
   <div id="volumeControls">
-    <label for="volumeProfile">Volume transparency</label><select id="volumeProfile"><option value="disk">Disk</option><option value="remnant">Through to the remnant</option><option value="outflow">Diffuse outflow</option><option value="custom">Custom</option></select>
+    <label for="volumeProfile">Density transparency</label><select id="volumeProfile"><option value="disk">Disk</option><option value="remnant">Through to the remnant</option><option value="outflow">Diffuse outflow</option><option value="custom">Custom</option></select>
     <details><summary>Adjust transparency</summary>
       <label for="volumeDensityReference">Reference density (g cm⁻³)</label><input id="volumeDensityReference" type="number" value="10000" min="1e-30" step="any">
       <label for="volumeOpacityLength">Reference path length (km)</label><input id="volumeOpacityLength" type="number" value="10000" min="1e-30" step="any">
@@ -611,18 +618,20 @@ body.capture-mode #view, body.capture-mode #meshImage { left: 0; width: 100vw; h
       <label for="volumeDenseFadeStart">Fade dense gas above (g cm⁻³; 0 disables)</label><input id="volumeDenseFadeStart" type="number" value="0" min="0" step="any">
       <label for="volumeDenseOpacityFraction">Dense gas opacity fraction</label><input id="volumeDenseOpacityFraction" type="number" value="1" min="0" max="1" step="0.05">
       <div class="meta">A fraction below 1 reveals material behind dense gas. The fade spans a factor of 10 in density.</div>
-      <div class="check"><input id="volumePhysicalTransfer" type="checkbox" checked><label for="volumePhysicalTransfer">Compute opacity from reconstructed density</label></div>
+      <div id="physicalTransferControl" class="check"><input id="volumePhysicalTransfer" type="checkbox" checked><label for="volumePhysicalTransfer">Compute opacity from reconstructed density</label></div>
       <div class="check"><input id="volumeClampColorRange" type="checkbox" checked><label for="volumeClampColorRange">Keep opacity outside the colour range</label></div>
       <div class="meta">Opacity applies at this density over this path length. Longer paths make the view more transparent. These are display settings.</div>
     </details>
-    <label for="volumeReconstruction">Field reconstruction</label><select id="volumeReconstruction"><option value="linear">Linear field · fast</option><option value="continuous_linear">Continuous field · slower</option><option value="piecewise_constant">Original cell values</option><option value="continuous">Legacy smoothing · slow</option></select>
-    <div class="meta">Smooth field interpolates between native cells. It does not add simulation resolution.</div>
+    <div id="reconstructionControls">
+      <label for="volumeReconstruction">Field reconstruction</label><select id="volumeReconstruction"><option value="linear">Linear field · fast</option><option value="continuous_linear">Continuous field · slower</option><option value="piecewise_constant">Original cell values</option><option value="continuous">Legacy smoothing · slow</option></select>
+      <div class="meta">Smooth field interpolates between native cells. It does not add simulation resolution.</div>
+    </div>
     <label for="volumeQuality">Image quality</label><select id="volumeQuality"><option value="4">High · antialiased</option><option value="1">Standard</option></select>
     <div class="meta">Continuous reconstruction takes longer. A fast preview appears while moving the camera; the selected reconstruction follows when it stops.</div>
   </div>
   <button id="meshFit">Fit visible mesh</button>
   <div class="check"><input id="meshEdges" type="checkbox"><label for="meshEdges">Show cell edges</label></div>
-  <div class="check"><input id="meshInterior" type="checkbox"><label for="meshInterior">Show interior cell faces</label></div>
+  <div id="meshInteriorControl" class="check"><input id="meshInterior" type="checkbox"><label for="meshInterior">Show interior cell faces</label></div>
   <div class="check"><input id="meshLighting" type="checkbox" checked><label for="meshLighting">Light cell faces</label></div>
   <div id="meshNotice" class="meta"></div><button id="meshRetry" type="button">Refresh native view</button>
   <h2>Time and scale</h2>

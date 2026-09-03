@@ -69,9 +69,9 @@ def annotate(png: bytes, report: dict, meta: dict, channel_meta: dict,
     draw.text((bx, by + 45), f'{style["low"]:.2e}', font=font(12), fill=text)
     draw.text((x + panel_width - 15, by + 45), f'{style["high"]:.2e}  ({style["scale_mode"]})',
               font=font(12), fill=text, anchor="ra")
-    detail = (f'{report["rays"]:,} rays through native cells' if report.get("representation") == "volume"
+    detail = (f'{report["rays"]:,} rays through native cells' if report.get("representation") in ("volume", "cells")
               else f'{report["faces"]:,} native faces')
-    draw.text((28, height - 42), f'{report["selected_cells"]:,} visible cells  |  {detail}',
+    draw.text((28, height - 42), f'{report["selected_cells"]:,} selected cells  |  {detail}',
               font=font(14), fill=muted)
     output = io.BytesIO()
     picture.save(output, format="PNG")

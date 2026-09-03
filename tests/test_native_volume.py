@@ -52,6 +52,21 @@ def lattice(path: Path, invalid=False, translation=0.0, sites=(.5, 1.5, 2.5)):
 
 
 class VolumeTransferTest(unittest.TestCase):
+    def test_inspection_zoom_uses_physical_reference_and_explicit_reset(self):
+        options = {"enabled": True, "reference_half_extent_cm": 200.0}
+        close = volume_render.inspection_zoom(options, 100.0)
+        self.assertEqual(close["opacity_factor"], .25)
+        self.assertEqual(close["foreground_fade_depth_cm"], [-200.0, -100.0])
+        self.assertEqual(close["focus_opacity_factor"], 1)
+        self.assertEqual(volume_render.inspection_zoom(options, 400)["opacity_factor"], 1)
+        self.assertEqual(volume_render.inspection_zoom({**options, "enabled": False}, 100)["opacity_factor"], 1)
+        reset = volume_render.inspection_zoom(options, 100, fit_visible=True)
+        self.assertEqual(reset["reference_half_extent_cm"], 100)
+        self.assertEqual(reset["opacity_factor"], 1)
+        for reference in (0, -1, float('inf'), float('nan')):
+            with self.assertRaisesRegex(ValueError, "viewport sizes"):
+                volume_render.inspection_zoom({**options, "reference_half_extent_cm": reference}, 100)
+
     def test_physical_path_normalization_and_soft_floor(self):
         options = volume_render.volume_options({"volume": {"density_reference": 100,
                                             "density_power": .5, "opacity_length_cm": 200}})
@@ -108,6 +123,84 @@ class NativeMetalTest(unittest.TestCase):
     def camera(self, direction=(0, 0, 1), scale=.1):
         self.owner.set_camera({"target": [0, 0, 0], "forward": list(direction), "up": [0, 1, 0], "scale": scale})
         return self.owner.camera
+
+    def test_native_edges_follow_polygon_boundaries_without_changing_opacity(self):
+        self.volume.upload_transfer(np.tile([.5, .25], (27, 1)).astype(np.float32),
+                                    np.ones((512, 4), np.float32))
+        camera = self.camera(scale=.75)
+        plain, _ = self.volume.trace(camera, 129, 129, 4)
+        edged, report = self.volume.trace(camera, 129, 129, 4, edges=True)
+        np.testing.assert_array_equal(edged[:, :, 3], plain[:, :, 3])
+        np.testing.assert_allclose(edged[64, 64], plain[64, 64], atol=1e-6)
+        # Native cubic cells have projected boundaries x/y = +/- 0.5.
+        self.assertLess(edged[64, 107, 0], plain[64, 107, 0] - .02)
+        self.assertLess(edged[107, 64, 0], plain[107, 64, 0] - .02)
+        self.assertEqual(report['interpolation'], 'none')
+        far = self.camera(scale=30)
+        unresolved, _ = self.volume.trace(far, 64, 64, 4, edges=True)
+        reference, _ = self.volume.trace(far, 64, 64, 4)
+        np.testing.assert_allclose(unresolved, reference, atol=1e-6)
+
+    def test_zoom_fades_foreground_without_dimming_the_focus_cell(self):
+        z = self.volume.positions[:, 2]
+        fields = np.column_stack((np.where(z < -.5, 0., 1.),
+                                  np.where(z < -.5, 4., np.where(z < .5, 1., 0.)))).astype(np.float32)
+        palette = np.zeros((512, 4), np.float32)
+        palette[:, 0] = np.linspace(1, 0, 512)
+        palette[:, 2] = np.linspace(0, 1, 512)
+        palette[:, 3] = 1
+        self.volume.upload_transfer(fields, palette)
+        camera = self.camera(scale=.6)
+        opaque, _ = self.volume.trace(camera, 1, 1, 1)
+        revealed, _ = self.volume.trace(camera, 1, 1, 1, opacity_factor=1/16)
+        # Foreground cell [-1.5,-0.5]: 0.3 at factor 1/16, 0.6 in the
+        # smooth transition (mean 17/32), and 0.1 at full opacity.
+        front_tau = 4 * (.3/16 + .6*17/32 + .1)
+        transmission = math.exp(-front_tau)
+        background = np.array([.00212469, .00334654, .00477695])
+        expected = np.array([1-transmission, 0, transmission*(1-math.exp(-1))])
+        expected += transmission*math.exp(-1)*background
+        np.testing.assert_allclose(revealed[0, 0, :3], expected, atol=2e-6)
+        self.assertGreater(revealed[0, 0, 2], opaque[0, 0, 2]*8)
+
+    def test_foreground_optical_depth_is_invariant_to_native_cell_subdivision(self):
+        outputs = []
+        for name, sites in (("uniform", (.5, 1.5, 2.5)), ("unequal", (.2, 1.1, 2.4))):
+            owner = mesh_render.NativeMeshRenderer(lattice(self.root/(name+'-zoom.bin'), sites=sites), self.root)
+            volume = volume_render.MetalVolume(owner)
+            try:
+                volume.upload_transfer(np.tile([.5, .25], (27, 1)).astype(np.float32),
+                                       np.ones((512, 4), np.float32))
+                camera = {"target": [0, 0, 0], "forward": [0, 0, 1], "up": [0, 1, 0], "scale": .2}
+                image, _ = volume.trace(camera, 1, 1, 1, opacity_factor=.25)
+                self.assertAlmostEqual(float(image[0, 0, 3]), 1-math.exp(-.25*2.1), places=6)
+                outputs.append(image)
+            finally:
+                volume.close()
+                owner.close()
+        np.testing.assert_allclose(outputs[0], outputs[1], atol=1e-6)
+
+    def test_density_cell_mode_keeps_interiors_and_forces_original_values(self):
+        params = {"representation": "cells", "camera": self.camera(scale=.2), "width": 16, "height": 16,
+                  "density_floor": 0, "subpixel_samples": 1, "edges": True,
+                  "style": {"channel": "density", "scale_mode": "linear", "low": 1, "high": 20,
+                            "palette": "copper_blue", "opacity": .1},
+                  "volume": {"reconstruction": "continuous_linear", "density_reference": 10,
+                             "opacity_length_cm": 2},
+                  "zoom_opacity": {"enabled": True, "reference_half_extent_cm": .8}}
+        with mock.patch.object(self.owner, "_prepare_faces", side_effect=AssertionError('surface culling used')):
+            png, report = self.owner.render(params)
+        self.assertTrue(png.startswith(b'\x89PNG'))
+        self.assertEqual(report['representation'], 'cells')
+        self.assertEqual(report['reconstruction'], 'piecewise_constant')
+        self.assertEqual(report['interpolation'], 'none')
+        self.assertEqual(report['ruler_kind'], 'projected')
+        self.assertEqual(report['zoom_opacity']['opacity_factor'], .25)
+        self.assertTrue(report['interior_cells'])
+        self.assertGreaterEqual(report['max_cells_per_ray'], 3)
+        self.assertEqual(report['volume']['range_behavior'], 'clamp')
+        with self.assertRaisesRegex(ValueError, 'projected'):
+            self.owner.pick({})
 
     def test_uniform_medium_matches_analytic_chords_and_is_zoom_independent(self):
         fields = np.tile([.5, .25], (27, 1)).astype(np.float32)

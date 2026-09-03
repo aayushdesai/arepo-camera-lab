@@ -30,6 +30,29 @@ RECONSTRUCTIONS = {"piecewise_constant": 0, "continuous": 1, "linear": 2,
                    "continuous_linear": 3}
 
 
+def inspection_zoom(options: dict, half_extent_cm: float, *, fit_visible=False) -> dict:
+    """Optional display fade resembling fixed-pixel marker coverage under zoom.
+
+    The physical reference is saved across snapshots, independent of each
+    scene's normalization radius. This is not a change to the input density.
+    """
+    enabled = bool(options.get("enabled", False))
+    reference = float(options.get("reference_half_extent_cm", half_extent_cm))
+    if not (math.isfinite(half_extent_cm) and half_extent_cm > 0 and
+            math.isfinite(reference) and reference > 0):
+        raise ValueError("Zoom opacity needs finite positive physical viewport sizes")
+    if fit_visible:
+        reference = half_extent_cm
+    factor = min(1.0, (half_extent_cm/reference)**2) if enabled else 1.0
+    if factor < np.finfo(np.float32).tiny:
+        raise ValueError("Zoom opacity reference is outside the supported numerical range")
+    return {"enabled": enabled, "reference_half_extent_cm": reference,
+            "current_half_extent_cm": half_extent_cm, "opacity_factor": factor,
+            "rule": "foreground min(1, (current_half_extent_cm/reference_half_extent_cm)^2)",
+            "foreground_fade_depth_cm": [-2*half_extent_cm, -half_extent_cm],
+            "focus_opacity_factor": 1.0}
+
+
 def volume_options(params: dict) -> dict:
     result = dict(DEFAULT_VOLUME)
     for name in result:
@@ -114,9 +137,9 @@ class MetalVolume:
         self.library.av_gradient_seconds.restype = C.c_double
         self.library.av_gradient_fallbacks.argtypes = [pointer]
         self.library.av_gradient_fallbacks.restype = C.c_uint32
-        self.library.av_render.argtypes = [pointer, C.c_uint32, C.c_uint32, C.c_uint32,
+        self.library.av_render_styled.argtypes = [pointer, C.c_uint32, C.c_uint32, C.c_uint32,
                                            C.c_uint32, C.c_uint32, C.c_uint32,
-                                           pointer, pointer, pointer, pointer,
+                                           pointer, pointer, pointer, pointer, pointer,
                                            C.c_char_p, C.c_size_t]
         self.library.av_sample_fields.argtypes = [pointer, pointer, C.c_uint32, C.c_float, C.c_uint32,
                                                   C.c_uint32, pointer, C.c_char_p, C.c_size_t]
@@ -202,11 +225,21 @@ class MetalVolume:
         return result
 
     def trace(self, camera: dict, width: int, height: int, subpixels: int,
-              reconstruction: str = "piecewise_constant", cell_samples: int = 1):
+              reconstruction: str = "piecewise_constant", cell_samples: int = 1, *,
+              edges: bool = False, edge_width: float = .8, edge_strength: float = .9,
+              opacity_factor: float = 1.0, lighting: bool = False):
         if width <= 0 or height <= 0 or width > 1920 or height > 1200 or subpixels not in (1, 4):
             raise ValueError("Volume viewport must be at most 1920 by 1200 with 1 or 4 rays per pixel")
         if reconstruction not in RECONSTRUCTIONS or cell_samples not in (1, 2):
             raise ValueError("Invalid volume reconstruction or cell sampling")
+        if not (math.isfinite(edge_width) and 0 < edge_width <= 4 and
+                math.isfinite(edge_strength) and 0 <= edge_strength <= 1):
+            raise ValueError("Invalid native edge width or strength")
+        if (edges or lighting or opacity_factor < 1) and reconstruction != "piecewise_constant":
+            raise ValueError("Native cell decoration and foreground fade require original cell values")
+        if not math.isfinite(opacity_factor) or not 0 < opacity_factor <= 1:
+            raise ValueError("Display opacity factor must be finite and in (0,1]")
+        stroke = np.array([int(edges)+2*int(lighting), edge_width, edge_strength, opacity_factor], dtype=np.float32)
         forward, up = np.asarray(camera["forward"]), np.asarray(camera["up"])
         right = np.cross(forward, up)
         radius = self.owner.meta["display_radius_cm"]
@@ -218,8 +251,8 @@ class MetalVolume:
         pixels = np.empty((height, width, subpixels, 4), dtype=np.float32)
         stats = np.empty((height, width, subpixels, 4), dtype=np.uint32)
         gpu_seconds = C.c_double()
-        if self.library.av_render(self.handle, width, height, subpixels, 8192,
-                                  RECONSTRUCTIONS[reconstruction], cell_samples, uniform.ctypes.data,
+        if self.library.av_render_styled(self.handle, width, height, subpixels, 8192,
+                                  RECONSTRUCTIONS[reconstruction], cell_samples, uniform.ctypes.data, stroke.ctypes.data,
                                   pixels.ctypes.data, stats.ctypes.data, C.byref(gpu_seconds),
                                   self.error, len(self.error)):
             raise ValueError(self.error.value.decode())
@@ -239,11 +272,19 @@ class MetalVolume:
                   "interpolation": {"continuous": "compact_shepard_8", "linear": "limited_least_squares", "piecewise_constant": "none", "continuous_linear": "blended_limited_gradients_8"}[reconstruction],
                   "gradient_setup_gpu_seconds": self.gradient_seconds,
                   "gradient_fallback_cells": self.gradient_fallbacks}
+        report.update(edges=bool(edges), edge_width_pixels=edge_width if edges else 0,
+                      edge_strength=edge_strength if edges else 0, opacity_factor=opacity_factor,
+                      edge_resolution_pixels=[2, 5] if edges else None, lighting=bool(lighting))
         return pixels.mean(axis=2), report
 
     def render(self, params: dict):
         from PIL import Image
         from .mesh_capture import fit_camera
+        original_cells = params.get("representation") == "cells"
+        if original_cells:
+            params = {**params, "volume": {**params.get("volume", {}),
+                       "reconstruction": "piecewise_constant", "transfer_stage": "after_reconstruction",
+                       "range_behavior": params.get("volume", {}).get("range_behavior", "clamp")}}
         started = time.monotonic()
         owner, style = self.owner, dict(params["style"])
         low, high = float(style["low"]), float(style["high"])
@@ -307,11 +348,20 @@ class MetalVolume:
                 raise ValueError("No visible native cells to fit")
             camera = fit_camera(self.positions[self.visible_indices, :3], camera, width/height)
         owner.set_camera(camera)
-        owner.progress("Integrating rays through native Voronoi cells on Metal")
+        zoom = inspection_zoom(params.get("zoom_opacity", {}) if original_cells else {},
+                               owner.camera["scale"]*owner.meta["display_radius_cm"],
+                               fit_visible=bool(params.get("fit_visible")))
+        owner.progress("Drawing original cells with density opacity on Metal" if original_cells else
+                       "Integrating rays through native Voronoi cells on Metal")
         subpixels = int(params.get("subpixel_samples", 4))
         pixels, stats = self.trace(owner.camera, width, height, subpixels,
                                   options["reconstruction"],
-                                  int(params.get("cell_samples", 2 if subpixels == 4 else 1)))
+                                  int(params.get("cell_samples", 2 if subpixels == 4 else 1)),
+                                  edges=original_cells and bool(params.get("edges", False)),
+                                  edge_width=float(params.get("edge_width_pixels", .8)),
+                                  edge_strength=float(params.get("edge_strength", .9)),
+                                  opacity_factor=zoom["opacity_factor"],
+                                  lighting=original_cells and bool(params.get("lighting", False)))
         linear = np.clip(pixels[:, :, :3], 0, 1)
         srgb = np.where(linear <= .0031308, 12.92*linear, 1.055*linear**(1/2.4)-.055)
         picture = Image.fromarray(np.rint(srgb*255).astype(np.uint8))
@@ -322,13 +372,16 @@ class MetalVolume:
                   "scene_sha256": owner.meta["sha256"], "native_cell_count": int(owner.header["num_cells"]),
                   "selected_cells": int(len(self.visible_indices)), "width": width, "height": height,
                   "render_seconds": time.monotonic()-started, "setup_seconds": self.setup_seconds,
-                  "backend": "native_metal_voronoi_volume_v004", "device": self.device,
-                  "representation": "volume", "density_floor": floor, "volume": options,
+                  "backend": "native_metal_voronoi_cells_v001" if original_cells else "native_metal_voronoi_volume_v004", "device": self.device,
+                  "representation": "cells" if original_cells else "volume", "density_floor": floor, "volume": options,
                   "reconstruction_fields": (["physical_channel_scaled", "gas_density_scaled"]
                                              if options["transfer_stage"] == "after_reconstruction"
                                              else ["transformed_colour_scalar", "display_extinction"]),
                   "ruler_kind": "projected",
                   "early_termination_transmittance": .001, "camera": owner.camera, "style": style}
+        if original_cells:
+            report.update(zoom_opacity=zoom, interior_cells=True, opacity_source="gas_density_and_native_chord_length",
+                          edge_geometry="native_neighbour_plane_intersections")
         return output.getvalue(), report
 
     def close(self):

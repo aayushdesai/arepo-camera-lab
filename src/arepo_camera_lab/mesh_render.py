@@ -260,12 +260,12 @@ class NativeMeshRenderer:
 
     def render(self, params: dict) -> tuple[bytes, dict]:
         representation = params.get("representation", "faces")
-        if representation == "volume":
+        if representation in ("volume", "cells"):
             from .volume_render import MetalVolume
             if self.volume is None:
                 self.volume = MetalVolume(self)
             png, report = self.volume.render(params)
-            self.active_representation = "volume"
+            self.active_representation = representation
             self.capabilities = self.volume.capabilities
             return png, report
         if representation != "faces":
@@ -368,7 +368,7 @@ class NativeMeshRenderer:
         return output.getvalue(), report
 
     def pick(self, params: dict) -> dict:
-        if self.active_representation == "volume":
+        if self.active_representation in ("volume", "cells"):
             raise ValueError("Volume rulers measure projected distance; use the face view for 3D surface picks")
         from vtkmodules.vtkRenderingCore import vtkCellPicker
         self.set_camera(params["camera"])

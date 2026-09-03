@@ -64,10 +64,23 @@ For one ad-hoc local file, `serve --scene ... --field-sidecar ... --snapshot
 
 On macOS, the live viewer initially selects **Native cell volume · Metal**.
 It traverses the full native Voronoi connectivity on the local GPU and integrates
-inside cells. **Native cell faces · VTK** retains the explicit polyhedra,
-optional edges, and interior faces for geometry debugging. The point-budget
-selector affects only the point preview. Both native modes need complete v052
-connectivity; the Metal view also requires the Xcode Command Line Tools.
+inside cells. **Native cells · faces and edges** offers two opacity modes:
+**Density through cells · Metal** keeps original cell values, draws native edges
+and includes interior cells with density/path opacity; **Uniform on surfaces ·
+VTK** retains polygon surfaces, ordinary surface opacity and optional interior
+faces. The point-budget selector affects only the point preview. Native modes
+need complete v052 connectivity; Metal requires the Xcode Command Line Tools.
+
+For cell inspection select **Density through cells · Metal** and **Show cell
+edges**. Colour stays constant within each original cell; no field interpolation
+is used. **Reveal on zoom** fades foreground material as the view narrows while
+retaining full density opacity near the camera's focus plane. **Fit visible
+mesh** sets a new zoom reference; turning the option off restores fixed
+density/path opacity. The reference is a physical length and persists across
+snapshots and saved styles. Older surface presets retain their VTK surface mode.
+See [cell opacity and zoom](docs/cell-density-opacity.md) for the display transfer,
+edge resolution, and the exact foreground fade. This is an inspection aid;
+keep it off when comparing images at different zooms with fixed opacity.
 
 The purpose is to inspect physical structure and follow its evolution. The
 point cloud remains available for that work. **Compare with point cloud**
@@ -84,7 +97,7 @@ Unavailable fields or different field units are reported instead of silently
 restoring a mismatched style. Uncheck it to use each new viewer's usual initial
 view; explicit saved-pose navigation still restores that pose and its styling.
 
-Choose a **Volume transparency** preset for the **Disk**, **Through to the
+Choose a **Density transparency** preset for the **Disk**, **Through to the
 remnant**, or **Diffuse outflow**. These change density visibility and optical
 weighting. The field colour, camera, and original pose remain independent.
 **Hide cells below density** starts at 100 g cm^-3; the outflow preset lowers it
@@ -134,8 +147,9 @@ view and volume settings are saved with style presets and session archives.
 The bottom-right overlay shows the displayed snapshot's simulation time and
 index, a calibrated scale bar, and the field-colour legend. Choose centimetres,
 kilometres, or automatic units. The two-click ruler measures **3D surface**
-distance in the face view. Volume and point views measure **projected** distance
-in the camera plane, because a transparent volume has no unique surface.
+distance with **Uniform on surfaces · VTK**. Density cells, volume and point
+views measure **projected** distance in the camera plane, because a transparent
+cell column has no unique surface.
 Measurements retain their coordinate convention, scene hash, and camera plane;
 face measurements also retain native cell IDs.
 
@@ -154,7 +168,9 @@ arepo-camera-lab capture-mesh \
 
 See the [native viewer notes](docs/voronoi-raytrace-backend.md),
 [volume capture example](examples/native-volume-capture.example.json), and
-[face capture example](examples/native-capture.example.json). Existing
+[face capture example](examples/native-capture.example.json). The
+[density-cell capture example](examples/native-cell-opacity.example.json)
+records original cells, native edges, and the optional physical zoom reference. Existing
 `capture-gallery` and `capture-spline-movie` retain their point-rendering
 behavior. A native-volume movie export has not been added to those commands.
 

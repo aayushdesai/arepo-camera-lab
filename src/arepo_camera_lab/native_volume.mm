@@ -13,10 +13,10 @@
 #include <vector>
 
 struct KDNode { float split; uint32_t axis, left, right, first, last, pad[2]; };
-struct Uniforms { uint32_t shape[4]; float camera[16]; uint32_t scene[4]; };
+struct Uniforms { uint32_t shape[4]; float camera[16]; uint32_t scene[4]; float stroke[4]; };
 struct Transfer {float domain[4], density[4], flags[4], bounds[4];};
 static_assert(sizeof(Transfer)==64, "Metal field transfer layout");
-static_assert(sizeof(KDNode) == 32 && sizeof(Uniforms) == 96, "Metal buffer layout");
+static_assert(sizeof(KDNode) == 32 && sizeof(Uniforms) == 112, "Metal buffer layout");
 
 struct Volume {
   id<MTLDevice> device;
@@ -153,9 +153,9 @@ extern "C" int av_fields(void* handle, const float* fields, const float* palette
 extern "C" double av_gradient_seconds(void* handle) {return static_cast<Volume*>(handle)->gradientSeconds;}
 extern "C" uint32_t av_gradient_fallbacks(void* handle) {return static_cast<Volume*>(handle)->gradientFallbacks;}
 
-extern "C" int av_render(void* handle, uint32_t width, uint32_t height,
+extern "C" int av_render_styled(void* handle, uint32_t width, uint32_t height,
                           uint32_t subpixels, uint32_t maxSteps,
-                          uint32_t reconstruction, uint32_t cellSamples, const float* camera,
+                          uint32_t reconstruction, uint32_t cellSamples, const float* camera, const float* stroke,
                           float* pixels, uint32_t* stats, double* gpuSeconds,
                           char* error, size_t errorSize) {
   @autoreleasepool {
@@ -164,10 +164,16 @@ extern "C" int av_render(void* handle, uint32_t width, uint32_t height,
       if(!v->fields || !v->palette) throw std::runtime_error("Set the native volume transfer before rendering");
       if(reconstruction>3 || (cellSamples!=1 && cellSamples!=2))
         throw std::runtime_error("Invalid native volume reconstruction or cell sampling");
+      if(!std::isfinite(stroke[0]) || !std::isfinite(stroke[1]) || !std::isfinite(stroke[2]) || !std::isfinite(stroke[3]) ||
+         stroke[0]<0 || stroke[0]>3 || std::floor(stroke[0])!=stroke[0] || stroke[1]<=0 || stroke[1]>4 || stroke[2]<0 || stroke[2]>1 ||
+         stroke[3]<=0 || stroke[3]>1 ||
+         ((stroke[0]>0 || stroke[3]<1) && reconstruction!=0))
+        throw std::runtime_error("Native cell edges require original cell values and finite stroke settings");
       const size_t rays = size_t(width)*height*subpixels;
       if(!rays || rays > 1920ul*1200*4) throw std::runtime_error("Native volume viewport exceeds its pixel budget");
       Uniforms u{{width,height,subpixels,maxSteps}, {}, {v->count,v->root,reconstruction,cellSamples}};
       std::memcpy(u.camera, camera, sizeof(u.camera));
+      std::memcpy(u.stroke, stroke, sizeof(u.stroke));
       id<MTLBuffer> output = [v->device newBufferWithLength:rays*16 options:MTLResourceStorageModeShared];
       id<MTLBuffer> status = [v->device newBufferWithLength:rays*16 options:MTLResourceStorageModeShared];
       if(!output || !status) throw std::runtime_error("Metal frame allocation failed");
@@ -190,6 +196,18 @@ extern "C" int av_render(void* handle, uint32_t width, uint32_t height,
       return 0;
     } catch(const std::exception& ex) {errorMessage(error, errorSize, ex.what());return 1;}
   }
+}
+
+// Keep the previous C entry point compatible with already-running viewers.
+// New Python clients use the explicit styled entry point above.
+extern "C" int av_render(void* handle,uint32_t width,uint32_t height,
+                         uint32_t subpixels,uint32_t maxSteps,
+                         uint32_t reconstruction,uint32_t cellSamples,const float* camera,
+                         float* pixels,uint32_t* stats,double* gpuSeconds,
+                         char* error,size_t errorSize) {
+  const float stroke[4]{0,.8f,.9f,1};
+  return av_render_styled(handle,width,height,subpixels,maxSteps,reconstruction,
+                          cellSamples,camera,stroke,pixels,stats,gpuSeconds,error,errorSize);
 }
 
 extern "C" int av_sample_fields(void* handle, const float* points, uint32_t count,

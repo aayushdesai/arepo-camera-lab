@@ -15,6 +15,8 @@ function element(id) {
   return elements.get(id);
 }
 element('meshDensityFloor').value = '100';
+element('meshOpacityMode').value = 'uniform'; // Exercise saved legacy surface settings first.
+element('meshZoomOpacity').checked = true;
 element('volumeProfile').value = 'disk';
 element('volumeDensityReference').value = '10000';
 element('volumeOpacityLength').value = '10000';
@@ -180,6 +182,37 @@ vm.runInContext(fs.readFileSync(path.join(directory, 'mesh_viewer.js'), 'utf8'),
     releaseResponse();await pending;holdResponse=false;
     assert.equal(meshImage.style.display,'none');
     assert.equal(meshLastReport,null);
+    // Density cells preserve their original fields, draw through interiors,
+    // and carry a physical zoom reference across a changed scene radius.
+    renderMode.value='mesh';meshOpacityMode.value='density';meshZoomOpacity.checked=true;
+    camera.scale=2;meshZoomReferenceHalfCm=null;renderMode.onchange();
+    assert.equal(meshParameters().representation,'cells');
+    assert.equal(meshParameters().volume.reconstruction,'piecewise_constant');
+    assert.equal(meshParameters().volume.transfer_stage,'after_reconstruction');
+    assert.equal(meshParameters().cell_samples,1);
+    assert.equal(meshParameters().zoom_opacity.reference_half_extent_cm,20);
+    assert.equal(meshEdges.disabled,false);assert.equal(meshLighting.disabled,false);
+    assert.equal(meshInterior.disabled,true);
+    assert.equal(reconstructionControls.style.display,'none');
+    assert.equal(volumeControls.style.display,'block');
+    const densitySaved=meshViewState();
+    DATA.scene.display_radius_cm=20;camera.scale=.5;applyMeshViewState(densitySaved);
+    assert.equal(meshParameters().zoom_opacity.reference_half_extent_cm,20);
+    assert.equal(meshParameters().zoom_opacity.enabled,true);
+    assert.equal(meshParameters().camera.scale*DATA.scene.display_radius_cm,10);
+    await requestNativeFrame();
+    const previousPicks=picks;
+    await rulerPick({clientX:250,clientY:200});await rulerPick({clientX:550,clientY:200});
+    assert.equal(picks,previousPicks);
+    assert.equal(window.cameraLabMeasurements().kind,'projected');
+    assert.equal(window.cameraLabMeasurements().distance_cm,15);
+    meshZoomOpacity.checked=false;meshZoomOpacity.onchange();
+    assert.equal(meshParameters().zoom_opacity.enabled,false);
+    camera.scale=.25;meshZoomOpacity.checked=true;meshZoomOpacity.onchange();
+    assert.equal(meshParameters().zoom_opacity.reference_half_extent_cm,5);
+    meshOpacityMode.value='uniform';meshOpacityMode.onchange();
+    assert.equal(meshParameters().representation,'faces');assert.equal(meshInterior.disabled,false);
+    assert.match(rulerStatus.textContent,/3D/);
     showAnnotations.checked=false; updateMeasurements();
     assert.equal(measurementHud.style.display,'none');
   })()`, context);

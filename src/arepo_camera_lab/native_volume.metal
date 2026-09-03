@@ -4,7 +4,7 @@ using namespace metal;
 
 struct Edge { packed_float3 delta; uint neighbor; };
 struct KDNode { float split; uint axis, left, right, first, last, pad0, pad1; };
-struct Uniforms { uint4 shape; float4 target, forward, right, up; uint4 scene; };
+struct Uniforms { uint4 shape; float4 target, forward, right, up; uint4 scene; float4 stroke; };
 struct Transfer {float4 domain, density, flags, bounds;};
 struct Gradient {float4 scalar, extinction, bounds;};
 struct Fit {float3 a,b,c,rhs;uint count;};
@@ -244,6 +244,49 @@ float2 advance(float2 current, float step) {
   return float2(total,error-(total-sum));
 }
 
+// Distance to the actual polygon boundary in the orthographic image plane.
+// Moving a pixel moves its intersection along the face plane. Project every
+// other native half-space constraint through those two tangents; the nearest
+// constraint is a polygon edge. No triangulation diagonals or density size law.
+float nativeEdgeCoverage(float3 relative,uint face,uint cell,float edgeScale,
+                          device const uint* offsets,device const Edge* edges,
+                          constant Uniforms& u) {
+  if(face==0xffffffff)return 0;
+  float3 n=float3(edges[face].delta)*edgeScale;
+  float denom=dot(n,u.forward.xyz);
+  if(abs(denom)<1e-8f*length(n))return 0;
+  float3 dx=u.right.xyz-u.forward.xyz*(dot(n,u.right.xyz)/denom);
+  float3 dy=u.up.xyz-u.forward.xyz*(dot(n,u.up.xyz)/denom);
+  float nearest=INFINITY;
+  for(uint e=offsets[cell];e<offsets[cell+1];e++) {
+    if(e==face)continue;
+    float3 d=float3(edges[e].delta)*edgeScale;
+    float slope=length(float2(dot(d,dx),dot(d,dy)));
+    if(slope>1e-25f) {
+      float distance=max(0.0f,(0.5f*dot(d,d)-dot(relative,d))/slope);
+      nearest=min(nearest,distance);
+    }
+  }
+  float pixels=nearest/(2*u.target.w/u.shape.y),halfWidth=u.stroke.y/2;
+  return 1-smoothstep(max(0.0f,halfWidth-0.5f),halfWidth+0.5f,pixels);
+}
+
+// Integrate the foreground display fade over a complete native-cell chord.
+// The focus region retains full density opacity. Smoothstep rises from the
+// zoom factor at depth -2*halfExtent to one at -halfExtent. Its polynomial
+// integral prevents the answer depending on how that chord is subdivided.
+float inspectionChord(float start,float chord,float halfExtent,float factor) {
+  if(factor>=1)return chord;
+  float a=-2*halfExtent,b=-halfExtent,end=start+chord;
+  if(start>=b)return chord;
+  if(end<=a)return factor*chord;
+  float front=clamp(a-start,0.0f,chord),focus=clamp(end-b,0.0f,chord);
+  float ramp=max(0.0f,chord-front-focus);
+  float u0=clamp((start-a)/halfExtent,0.0f,1.0f),u1=clamp((end-a)/halfExtent,0.0f,1.0f);
+  float integral0=u0*u0*u0*(1-0.5f*u0),integral1=u1*u1*u1*(1-0.5f*u1);
+  return factor*(front+ramp)+focus+(1-factor)*halfExtent*(integral1-integral0);
+}
+
 kernel void nativeVolume(device const float4* positions [[buffer(0)]],
                          device const uint* offsets [[buffer(1)]],
                          device const Edge* edges [[buffer(2)]],
@@ -289,19 +332,26 @@ kernel void nativeVolume(device const float4* positions [[buffer(0)]],
     visits++;
     float3 relative=fma(distance.x,direction,origin-positions[cell].xyz)+distance.y*direction;
     relative-=round(relative/box)*box;
-    float length=INFINITY;uint next=0xffffffff;
+    float length=INFINITY;uint next=0xffffffff,exitFace=0xffffffff,entryFace=0xffffffff;
+    float entryDistance=INFINITY,minCellWidth=INFINITY;
     for(uint e=offsets[cell];e<offsets[cell+1];e++) {
       Edge edge=edges[e]; float3 delta=float3(edge.delta)*edgeScale;
       float denom=dot(direction,delta);
-      if(denom<=0)continue;
       uint candidate=(edge.neighbor&0x7fffffff)-1;
+      if(u.stroke.x>0)minCellWidth=min(minCellWidth,sqrt(dot(delta,delta)));
+      if(u.stroke.x>0 && candidate==previous && denom<0) {
+        float separation=abs(0.5f*dot(delta,delta)-dot(relative,delta))/sqrt(dot(delta,delta));
+        if(separation<entryDistance){entryDistance=separation;entryFace=e;}
+      }
+      if(denom<=0)continue;
       float segment=(0.5f*dot(delta,delta)-dot(relative,delta))/denom;
       if(candidate==previous && segment<=0)continue;
       segment=max(0.0f,segment);
-      if(segment<length){length=segment;next=candidate;}
+      if(segment<length){length=segment;next=candidate;exitFace=e;}
     }
     if(!isfinite(length)){status=4;break;}
     float remaining=(exit-distance.x)-distance.y;
+    bool nativeExit=length<remaining;
     length=min(length,remaining);
     if(length>0) {
       uint samples=u.scene.z?u.scene.w:1;
@@ -313,11 +363,25 @@ kernel void nativeVolume(device const float4* positions [[buffer(0)]],
         field=displayTransfer(field,transfer);
         if(!isfinite(field.y)||field.y<0){status=64;break;}
         if(field.y>0 && isfinite(field.x)) {
-          float tau=min(80.0f,field.y*length/samples);
+          float opticalLength=inspectionChord(distance.x+distance.y,length,u.target.w,u.stroke.w);
+          float tau=min(80.0f,field.y*opticalLength/samples);
           float alpha=tau<0.001f?tau*(1-0.5f*tau+tau*tau/6):1-exp(-tau);
           float v=clamp(field.x,0.0f,1.0f)*511;
           uint left=min(uint(v),510u);
           float3 emission=mix(palette[left].xyz,palette[left+1].xyz,v-left);
+          if((uint(u.stroke.x)&2u) && entryFace!=0xffffffff) {
+            float3 normal=float3(edges[entryFace].delta);
+            emission*=0.4f+0.6f*abs(dot(normal,direction))/sqrt(dot(normal,normal));
+          }
+          if(uint(u.stroke.x)&1u) {
+            float front=nativeEdgeCoverage(relative,entryFace,cell,edgeScale,offsets,edges,u);
+            float back=nativeExit?nativeEdgeCoverage(relative+length*direction,exitFace,cell,edgeScale,offsets,edges,u):0;
+            // Rear edges attenuate through this cell. Edges decorate its colour;
+            // they never add opacity independently of the cell's density/path.
+            float resolved=smoothstep(2.0f,5.0f,minCellWidth/(2*u.target.w/u.shape.y));
+            float coverage=max(front,(1-alpha)*back)*resolved;
+            emission=mix(emission,background,coverage*u.stroke.z);
+          }
           color+=transmission*alpha*emission;
           transmission*=1-alpha;
         }
