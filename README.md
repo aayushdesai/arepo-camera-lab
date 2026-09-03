@@ -84,6 +84,11 @@ simulation resolution or establish whether a feature is physically resolved.
 The gas-density channel
 is the simulation mass density in g cm^-3, not a density proxy.
 
+Neither native view changes the run's refinement. The
+[snapshot 721 geometry audit](docs/mesh-fidelity-audit.md) matches all generator
+positions and checks sampled cell volumes against the raw snapshot. This
+validates the saved geometry at that epoch; the image-quality problem remains.
+
 High quality integrates four deterministic subpixel rays with two samples per
 cell; a smaller frame with one of each renders during orbit/zoom and refines
 after interaction stops. Linear gradients are prepared once per field/transfer

@@ -22,6 +22,11 @@ accumulation to retain short steps after crossing the much larger simulation
 box. This reconstructs the exported geometry; it is not a bit-identical recovery
 of the original AREPO double-precision vertices.
 
+The [snapshot 721 fidelity audit](mesh-fidelity-audit.md) independently matches
+all exported generators to the raw snapshot and compares 848 reconstructed
+cell volumes with M/rho. It verifies geometry at that epoch; the Metal field
+reconstruction and image appearance have separate validation requirements.
+
 Periodic generator positions and ghost-neighbour planes remain available.
 The Metal locator indexes every generator and starts each ray at the periodic
 display-box entrance. All traversed cells are available, including ones that

@@ -1,8 +1,9 @@
 # Refinement context for the native preview scenes
 
-Checked 2026-09-02 by read-only inspection of small configuration/source files
-and the first 64 KiB of selected run logs. No raw snapshot payload was read and
-no new cell-size statistics were calculated.
+The initial 2026-09-02 check inspected small configuration/source files
+and the first 64 KiB of selected run logs. That configuration check did not read
+raw snapshot payloads or calculate cell-size statistics. The subsequent
+[2026-09-03 eta audit](mesh-fidelity-audit.md) verifies snapshot 721 directly.
 
 ## Run binding
 
@@ -70,3 +71,20 @@ historical simulation.
 - `arepoconfig.h`: `dfdbbaa50d0ca6f61ea4a67f4ba8e9f5e5acc409056af25e294a9623b5c711f2`
 - `criterion_refinement.cc`: `22d4dfec13cbfd592f74dda13dae38619581a14ea0faf7d00c76fcfaa001a771`
 - `criterion_derefinement.cc`: `73efee3ed48c4bf316f7073b4ac69e8d719299168818f506dd932779bef03f5e`
+
+## Direct snapshot check, 2026-09-03
+
+Eta allocation 64279567 on eta295 read snapshot 721 once. Its own `Parameters`
+and `Config` attributes confirm the target mass, refinement/derefinement
+criteria, split/merge flags, volume limits, and face-angle regularization above.
+All 2,582,677 IDs and generator positions match the prepared scene. Independent
+volumes and production face-builder volumes agree with snapshot M/rho for all
+848 sampled cells; the largest production relative discrepancy is 2.582e-6.
+
+The full-snapshot density/size summaries show larger cells at lower density,
+with median equivalent widths from 103 km in the densest bin to 111,540 km in
+the lowest-density bin. The latter has median mass 1.385e25 g and median volume
+1.388e30 cm^3, so a constant-mass size law is inappropriate there. See the
+[complete audit](mesh-fidelity-audit.md) for bin definitions, hashes, coverage,
+and limits. This validates geometry at one epoch; it does not identify every
+visible patch as physical structure or fix the rejected preview appearance.

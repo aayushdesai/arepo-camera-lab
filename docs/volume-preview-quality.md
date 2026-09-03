@@ -149,3 +149,22 @@ The checked [run-specific refinement context](run-refinement-context.md) records
 target-mass refinement plus volume and neighbour-volume limits. Interpret the
 remaining grain using those rules and actual geometry; the image alone cannot
 separate physical structure from finite-resolution texture.
+
+## Real geometry audit, 2026-09-03
+
+The user again questioned whether the grain came from incorrect mesh refinement.
+An eta audit now closes the missing raw-snapshot comparison for epoch 721:
+2,582,677 exact IDs and generator positions match, all 39,569,906 neighbour
+vectors pass the float32 consistency check, and 848 independent/production
+polyhedral volumes agree with raw M/rho. The maximum production relative
+volume error is 2.582e-6. The snapshot metadata also confirms the recorded
+refinement rules. [Methods, cell-size summaries, and evidence](mesh-fidelity-audit.md)
+are retained with the reproducible audit.
+
+This does not make the images acceptable. The current default still fits
+transformed colour and display opacity independently and can jump at cell
+faces. A comparison with an AREPO-VTK reference field reconstruction is the
+next diagnostic; the saved cell refinement should be retained. The point
+preview uses fixed-pixel round markers and per-marker opacity, so its
+appearance is not a matched physical-volume reference. No additional render
+or image-quality success is claimed by this audit.
