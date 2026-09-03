@@ -161,10 +161,29 @@ volume error is 2.582e-6. The snapshot metadata also confirms the recorded
 refinement rules. [Methods, cell-size summaries, and evidence](mesh-fidelity-audit.md)
 are retained with the reproducible audit.
 
-This does not make the images acceptable. The current default still fits
+This does not make the images acceptable. At the time of the audit, the default fitted
 transformed colour and display opacity independently and can jump at cell
 faces. A comparison with an AREPO-VTK reference field reconstruction is the
 next diagnostic; the saved cell refinement should be retained. The point
 preview uses fixed-pixel round markers and per-marker opacity, so its
 appearance is not a matched physical-volume reference. No additional render
 or image-quality success is claimed by this audit.
+
+## Field reconstruction and scientific inspection, 2026-09-03
+
+The [next iteration](field-reconstruction-work.md) adds a continuous blend of
+local gradients, optional field-before-transfer mapping, dense-gas fading,
+quick comparison with the point cloud, and a physical view lock across manual
+snapshot loads. Fast linear reconstruction remains the initial interactive
+mode. The point-cloud workflow remains a reference for finding structures and
+following formation; a smoother native image alone does not meet that goal.
+
+Seven new matched native PNGs are retained at
+`~/Movies/AREPO/voronoi-m4-preview-20260903-v005`, with source commit
+`0806c29a4bbd8fe190c703f691b2338d261b111d`, configurations and per-frame reports.
+The subsequent GUI/default changes leave the captured numerical renderer
+unchanged. The continuous images reduce some boundary texture; the optional
+dense fade reveals more inner contrast. The images do not yet demonstrate
+better structural visibility than the point cloud or continuity of identified
+structures through adjacent snapshots. Those remain separate requirements
+from software correctness and presentation quality.

@@ -597,6 +597,8 @@ body.capture-mode #view, body.capture-mode #meshImage { left: 0; width: 100vw; h
   <div id="sceneMeta" class="meta"></div>
   <h2>3D view</h2>
   <label for="renderMode">Renderer</label><select id="renderMode"><option value="volume">Native cell volume · Metal</option><option value="mesh">Native cell faces · VTK</option><option value="points">Point preview</option></select>
+  <button id="comparePoints" type="button">Compare with point cloud</button>
+  <div class="meta">Compare the same snapshot, camera and colour field. Density filtering and volume transparency apply to native cells only.</div>
   <label for="meshDensityFloor">Hide cells below density (g cm⁻³)</label><input id="meshDensityFloor" type="number" value="100" min="0" step="any">
   <div class="meta">Lower this to reveal diffuse material. Colour and transparency are controlled separately.</div>
   <div id="volumeControls">
@@ -613,9 +615,9 @@ body.capture-mode #view, body.capture-mode #meshImage { left: 0; width: 100vw; h
       <div class="check"><input id="volumeClampColorRange" type="checkbox" checked><label for="volumeClampColorRange">Keep opacity outside the colour range</label></div>
       <div class="meta">Opacity applies at this density over this path length. Longer paths make the view more transparent. These are display settings.</div>
     </details>
-    <label for="volumeReconstruction">Field reconstruction</label><select id="volumeReconstruction"><option value="continuous_linear">Continuous field</option><option value="linear">Linear field · fast</option><option value="piecewise_constant">Original cell values</option><option value="continuous">Legacy smoothing · slow</option></select>
+    <label for="volumeReconstruction">Field reconstruction</label><select id="volumeReconstruction"><option value="linear">Linear field · fast</option><option value="continuous_linear">Continuous field · slower</option><option value="piecewise_constant">Original cell values</option><option value="continuous">Legacy smoothing · slow</option></select>
     <div class="meta">Smooth field interpolates between native cells. It does not add simulation resolution.</div>
-    <label for="volumeQuality">Image quality</label><select id="volumeQuality"><option value="1">Standard</option><option value="4">High · antialiased</option></select>
+    <label for="volumeQuality">Image quality</label><select id="volumeQuality"><option value="4">High · antialiased</option><option value="1">Standard</option></select>
     <div class="meta">Continuous reconstruction takes longer. A fast preview appears while moving the camera; the selected reconstruction follows when it stops.</div>
   </div>
   <button id="meshFit">Fit visible mesh</button>
@@ -999,7 +1001,11 @@ function setPhysicalPose(entry,visibleSceneBinding=null){
 }
 __MEASUREMENT_MATH__
 __MESH_VIEWER__
-if(alternatives.length){const pending=DATA.review_workspace?.requested_pose_id||localStorage.getItem(REVIEW_PENDING_POSE),initialPose=alternatives.some(row=>row.pose_id===pending)?pending:(alternatives.find(row=>Number(row.snapshot)===Number(DATA.scene.snapshot))?.pose_id);if(initialPose)activatePoseId(initialPose).catch(error=>statusText.textContent=error.message);}
+__INSPECTION_VIEW__
+// Manual inspection restores its own camera/style after this document loads;
+// an automatic pose activation could otherwise reset it or reload a point budget.
+const restoringInspection=new URLSearchParams(location.search).get('inspection')==='1';
+if(alternatives.length&&!restoringInspection){const pending=DATA.review_workspace?.requested_pose_id||localStorage.getItem(REVIEW_PENDING_POSE),initialPose=alternatives.some(row=>row.pose_id===pending)?pending:(alternatives.find(row=>Number(row.snapshot)===Number(DATA.scene.snapshot))?.pose_id);if(initialPose)activatePoseId(initialPose).catch(error=>statusText.textContent=error.message);}
 function setCaptureMode(enabled){
   batchCapture=Boolean(enabled);document.body.classList.toggle('capture-mode',batchCapture);
   resize();
@@ -1030,7 +1036,7 @@ render();
 '''
 
 
-HTML_TEMPLATE = HTML_TEMPLATE.replace("__MEASUREMENT_MATH__", Path(__file__).with_name("measurement_math.js").read_text()).replace("__MESH_VIEWER__", Path(__file__).with_name("mesh_viewer.js").read_text())
+HTML_TEMPLATE = HTML_TEMPLATE.replace("__MEASUREMENT_MATH__", Path(__file__).with_name("measurement_math.js").read_text()).replace("__MESH_VIEWER__", Path(__file__).with_name("mesh_viewer.js").read_text()).replace("__INSPECTION_VIEW__", Path(__file__).with_name("inspection_view.js").read_text())
 
 
 def write_html(path: Path, payload: dict) -> None:

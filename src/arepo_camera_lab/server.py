@@ -39,7 +39,10 @@ button { cursor: pointer; font-weight: 650; }
 button:hover { background: #242d35; }
 #fields { grid-column: 1 / -2; }
 #quit { grid-column: -2 / -1; }
-#statusBand { position: fixed; top: 104px; left: 0; right: 0; z-index: 2; height: 28px; display: grid; grid-template-columns: 1fr 220px; gap: 12px; align-items: center; padding: 4px 12px; background: rgba(8,11,14,.94); color: #a9bac5; font-size: 11px; }
+#statusBand { position: fixed; top: 104px; left: 0; right: 0; z-index: 2; height: 28px; display: grid; grid-template-columns: minmax(0,1fr) auto minmax(80px,160px); gap: 12px; align-items: center; padding: 4px 12px; background: rgba(8,11,14,.94); color: #a9bac5; font-size: 11px; }
+#status { overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+#keepViewLabel { display: flex; align-items: center; gap: 6px; white-space: nowrap; }
+#keepView { height: auto; margin: 0; }
 #progress { width: 100%; height: 9px; accent-color: #62a8cf; }
 iframe { position: fixed; top: 132px; left: 0; width: 100vw; height: calc(100vh - 132px); border: 0; background: #07090c; }
 #visibleData { position: fixed; left: 374px; bottom: 12px; z-index: 4; padding: 7px 10px; border: 1px solid #46535e; border-radius: 4px; background: rgba(8,11,14,.92); color: #e8f1f5; font-size: 12px; font-weight: 650; pointer-events: none; }
@@ -57,16 +60,37 @@ iframe { position: fixed; top: 132px; left: 0; width: 100vw; height: calc(100vh 
   <input id="fields" aria-label="Loaded physical-field sidecar path" readonly placeholder="verified physical-field sidecar path appears here">
   <button id="quit" title="Stop the local server and retain files, caches, and browser drafts">Quit</button>
 </header>
-<div id="statusBand"><span id="status">Loading the verified snapshot catalog...</span><progress id="progress" max="1" value="0"></progress></div>
+<div id="statusBand"><span id="status">Loading the verified snapshot catalog...</span><label id="keepViewLabel"><input id="keepView" type="checkbox" checked>Keep view on snapshot change</label><progress id="progress" max="1" value="0"></progress></div>
 <iframe id="viewer" title="Interactive AREPO camera viewer" src="/viewer"></iframe>
 <div id="visibleData" class="offline">VISIBLE DATA: NOT LOADED</div>
 <script>
 const scene=document.getElementById('scene'),fields=document.getElementById('fields'),snapshot=document.getElementById('snapshot'),points=document.getElementById('points'),status=document.getElementById('status'),progress=document.getElementById('progress'),frame=document.getElementById('viewer'),load=document.getElementById('load'),archive=document.getElementById('archive'),quit=document.getElementById('quit'),visibleData=document.getElementById('visibleData');
 const LAST_STATUS='arepo_camera_lab_last_server_status_v001';
+const keepView=document.getElementById('keepView');
+let keepViewTarget=null,pendingInspection=null,inspectionNotice='';
 let displayedRevision=-1,selectionDirty=false,pointsDirty=false,refreshing=false,starting=false,closing=false,closed=false,completedArchive=null,acknowledging=false,actionError=null;
+function carryInspection(data){
+  pendingInspection=null;
+  if(keepViewTarget!==Number(data.snapshot))return;
+  keepViewTarget=null;
+  if(!keepView.checked)return;
+  try{
+    const read=frame.contentWindow?.cameraLabInspectionState;
+    if(typeof read!=='function')throw new Error('The previous viewer was not ready.');
+    pendingInspection={state:read(),expected:{snapshot:Number(data.snapshot),sha256:data.scene_sha256}};
+  }catch(error){inspectionNotice='View not preserved: '+error.message;}
+}
+frame.addEventListener('load',()=>{
+  if(!pendingInspection)return;
+  const api=frame.contentWindow,shown=api?.AREPO_CAMERA_LAB_CAPTURE?.scene;
+  if(Number(shown?.snapshot)!==pendingInspection.expected.snapshot||shown?.sha256!==pendingInspection.expected.sha256)return;
+  const pending=pendingInspection;pendingInspection=null;
+  try{api.cameraLabRestoreInspection(pending.state,pending.expected);inspectionNotice='Physical camera and display settings preserved.';}
+  catch(error){inspectionNotice='View not preserved: '+error.message;}
+});
 function remember(data){try{sessionStorage.setItem(LAST_STATUS,JSON.stringify(data));}catch(error){}}
 function lastStatus(){try{return JSON.parse(sessionStorage.getItem(LAST_STATUS)||'null');}catch(error){return null;}}
-function showVisible(data){visibleData.textContent=`VISIBLE DATA: AREPO SNAPSHOT ${data.snapshot??'UNKNOWN'} | ${Number(data.point_count).toLocaleString()} CELLS`;visibleData.classList.remove('offline');}
+function showVisible(data){visibleData.textContent=`VISIBLE DATA: AREPO SNAPSHOT ${data.snapshot??'UNKNOWN'} | ${Number(data.point_count).toLocaleString()} POINT-PREVIEW CELLS`;visibleData.classList.remove('offline');}
 function freeze(value){frame.inert=value;frame.style.pointerEvents=value?'none':'';}
 function showClosed(){
   closed=true;clearInterval(poller);freeze(true);load.disabled=true;snapshot.disabled=true;archive.disabled=true;quit.disabled=false;quit.textContent='Close tab';
@@ -98,8 +122,8 @@ async function refresh(){
     if(data.cleanup_error){status.textContent='Archive failed; local data retained: '+data.cleanup_error;return;}
     progress.value=data.progress??0;
     if(data.loading){if(data.requested_snapshot!=null)snapshot.value=String(data.requested_snapshot);status.textContent=`${data.message} (${Math.round((data.progress??0)*100)}%) | visible snapshot remains ${data.snapshot??'none'}`;return;}
-    if(data.error){status.textContent='Load failed: '+data.error;return;}
-    if(data.loaded){const revisionChanged=data.revision!==displayedRevision;scene.value=data.scene_path;fields.value=data.field_sidecar_path??'';if(revisionChanged||!selectionDirty)snapshot.value=String(data.snapshot??'');if(revisionChanged||!pointsDirty)points.value=data.requested_points;status.textContent=`Ready: ${data.point_count.toLocaleString()} of ${data.num_cells.toLocaleString()} cells from AREPO snapshot ${data.snapshot??'unknown'} | ${data.scene_path}`;progress.value=1;showVisible(data);remember(data);if(revisionChanged){displayedRevision=data.revision;selectionDirty=false;pointsDirty=false;frame.src='/viewer?revision='+data.revision;}}
+    if(data.error){keepViewTarget=null;pendingInspection=null;status.textContent='Load failed: '+data.error;return;}
+    if(data.loaded){const revisionChanged=data.revision!==displayedRevision;scene.value=data.scene_path;fields.value=data.field_sidecar_path??'';if(revisionChanged||!selectionDirty)snapshot.value=String(data.snapshot??'');if(revisionChanged||!pointsDirty)points.value=data.requested_points;status.textContent=`Ready: ${data.point_count.toLocaleString()} of ${data.num_cells.toLocaleString()} cells from AREPO snapshot ${data.snapshot??'unknown'} | ${inspectionNotice||data.scene_path}`;progress.value=1;showVisible(data);remember(data);if(revisionChanged){carryInspection(data);displayedRevision=data.revision;selectionDirty=false;pointsDirty=false;frame.src='/viewer?revision='+data.revision+(pendingInspection?'&inspection=1':'');}}
   }catch(error){
     if(closing||completedArchive){showClosed();return;}
     const previous=lastStatus();if(previous?.loaded){scene.value=previous.scene_path??'';fields.value=previous.field_sidecar_path??'';}
@@ -109,7 +133,7 @@ async function refresh(){
 }
 snapshot.onchange=()=>{selectionDirty=true;status.textContent=`Selected AREPO snapshot ${snapshot.value}; press Load selected.`;};
 points.oninput=()=>{pointsDirty=true;};
-load.onclick=async()=>{if(snapshot.value==='')return;const requestedSnapshot=snapshot.value;load.disabled=true;snapshot.disabled=true;selectionDirty=true;pointsDirty=true;status.textContent=`Queueing verified AREPO snapshot ${requestedSnapshot}...`;progress.value=0;try{const response=await fetch('/api/load',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({snapshot:+requestedSnapshot,max_points:+points.value})}),data=await response.json();if(!response.ok)throw new Error(data.error||'load failed');}catch(error){status.textContent='Load failed: '+error.message;load.disabled=false;snapshot.disabled=false;}};
+load.onclick=async()=>{if(snapshot.value==='')return;const requestedSnapshot=snapshot.value;keepViewTarget=keepView.checked?Number(requestedSnapshot):null;pendingInspection=null;inspectionNotice='';load.disabled=true;snapshot.disabled=true;selectionDirty=true;pointsDirty=true;status.textContent=`Queueing verified AREPO snapshot ${requestedSnapshot}...`;progress.value=0;try{const response=await fetch('/api/load',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({snapshot:+requestedSnapshot,max_points:+points.value})}),data=await response.json();if(!response.ok)throw new Error(data.error||'load failed');}catch(error){keepViewTarget=null;pendingInspection=null;status.textContent='Load failed: '+error.message;load.disabled=false;snapshot.disabled=false;}};
 archive.onclick=async()=>{
   actionError=null;starting=true;archive.disabled=true;quit.disabled=true;load.disabled=true;snapshot.disabled=true;freeze(true);status.textContent='Saving the browser review and starting the archive...';
   try{

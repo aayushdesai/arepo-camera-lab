@@ -97,6 +97,17 @@ class NativeGeometryTest(unittest.TestCase):
 
 
 class MeasurementAndStyleTest(unittest.TestCase):
+    def test_physical_inspection_view_survives_snapshot_reference_changes(self):
+        if not shutil.which("node"):
+            self.skipTest("Node unavailable")
+        subprocess.run(["node", str(Path(__file__).with_name("test_inspection_view.cjs"))], check=True)
+
+    def test_snapshot_shell_carries_only_the_requested_inspection_view(self):
+        if not shutil.which("node"):
+            self.skipTest("Node unavailable")
+        subprocess.run(["node", str(Path(__file__).with_name("test_snapshot_shell.cjs"))],
+                       input=server.APP_HTML, text=True, check=True)
+
     def test_browser_controller_uses_current_frame_and_correct_ruler_kind(self):
         if not shutil.which("node"):
             self.skipTest("Node unavailable")

@@ -70,8 +70,8 @@ per-marker opacity. It does not integrate density through each physical cell.
 Its smoother appearance is therefore not a matched test of mesh geometry or
 physical resolution; the WebGL shader does not use a Gaussian kernel.
 
-The current Metal default fits limited gradients to transformed colour and
-display extinction independently. These are not AREPO's hydrodynamic gradients,
+At the time of this audit, the Metal default fitted limited gradients to
+transformed colour and display extinction independently. These are not AREPO's hydrodynamic gradients,
 and adjacent fitted cells can still disagree at their shared boundary.
 Colour mapping, density support, and opacity also determine which physical
 cell structure is visible. This makes the display reconstruction and transfer
@@ -84,7 +84,10 @@ explicit transfer, with an AREPO-VTK reference reconstruction. It should test
 the field before colour/opacity mapping and distinguish interpolation error
 from real cell-average structure. The v004 images remain rejected quality
 candidates. No new rendering or simulation resolution claim accompanies this
-geometry result.
+geometry result. Subsequent [field and inspection work](field-reconstruction-work.md)
+adds field-before-transfer interpolation and matched-view controls. Scientific
+usefulness means retaining visible structures and following their evolution,
+not merely making these images smoother.
 
 ## Reproduction and evidence
 

@@ -69,16 +69,31 @@ optional edges, and interior faces for geometry debugging. The point-budget
 selector affects only the point preview. Both native modes need complete v052
 connectivity; the Metal view also requires the Xcode Command Line Tools.
 
+The purpose is to inspect physical structure and follow its evolution. The
+point cloud remains available for that work. **Compare with point cloud**
+switches at the same snapshot, camera and colour settings; returning reuses
+the already displayed native frame if its settings are unchanged. Native
+density filtering and volume opacity differ from the point display, so this
+is a structural comparison rather than a pixel-for-pixel reference.
+
+In the live snapshot bar, **Keep view on snapshot change** preserves the
+physical camera position/extent, selected field, fixed colour limits and
+transparency settings when loading another snapshot. It is checked initially.
+Changes in each scene's normalization do not change the physical viewport.
+Unavailable fields or different field units are reported instead of silently
+restoring a mismatched style. Uncheck it to use each new viewer's usual initial
+view; explicit saved-pose navigation still restores that pose and its styling.
+
 Choose a **Volume transparency** preset for the **Disk**, **Through to the
 remnant**, or **Diffuse outflow**. These change density visibility and optical
 weighting. The field colour, camera, and original pose remain independent.
 **Hide cells below density** starts at 100 g cm^-3; the outflow preset lowers it
 to 0.01 g cm^-3. Advanced controls expose reference density, physical path
 length, and density weighting. These are display settings, not calibrated
-radiation transport. A fresh viewer selects **Continuous field** and **Standard**
-quality. It blends local gradients across native cell boundaries and computes
-colour and opacity from reconstructed fields. **Linear field · fast**,
-**Original cell values**, and **Legacy smoothing** remain selectable. Saved
+radiation transport. A fresh viewer selects **Linear field · fast** and
+**High · antialiased**, computing colour and opacity from reconstructed fields.
+Choose **Continuous field · slower** to blend local gradients across native
+cell boundaries; **Original cell values** and **Legacy smoothing** also remain selectable. Saved
 presets retain their previous reconstruction and transfer order. These display
 reconstructions do not add simulation resolution or establish whether a feature
 is physically resolved.
@@ -96,7 +111,12 @@ Orbit/zoom uses a smaller, fast linear preview and then restores the selected
 reconstruction after interaction stops. Gradients are prepared once per field
 change on the M4 and reused for camera changes. At 960 by 640 with one ray and
 two cell samples, the first continuous comparisons took 1.83–4.32 s on M4 Pro;
-linear reconstruction took 0.06–0.11 s. These exclude loading and image delivery.
+linear reconstruction took 0.06–0.11 s. At 1440 by 960 and four rays per pixel,
+continuous reconstruction took 10.99–28.90 s, versus 0.29–0.76 s for the previous
+linear mode. The visual gain was modest, so the fast mode remains the default.
+These GPU timings exclude loading and image delivery. The continuous mode has
+not yet demonstrated better visibility of evolving structures than the point
+cloud; smoothing alone is not the acceptance criterion.
 
 Under **Adjust transparency**, **Compute opacity from reconstructed density**
 controls transfer order. **Keep opacity outside the colour range** clamps the

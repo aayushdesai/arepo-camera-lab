@@ -19,6 +19,8 @@ element('volumeProfile').value = 'disk';
 element('volumeDensityReference').value = '10000';
 element('volumeOpacityLength').value = '10000';
 element('volumeDensityPower').value = '0.5';
+// Exercise the explicit continuous option at Standard quality; a fresh viewer
+// starts with fast linear reconstruction and four antialiased rays per pixel.
 element('volumeQuality').value = '1';
 element('volumeReconstruction').value = 'continuous_linear';
 element('volumeFloorSoftening').value = '1';
@@ -99,6 +101,32 @@ vm.runInContext(fs.readFileSync(path.join(directory, 'mesh_viewer.js'), 'utf8'),
     assert.equal(window.cameraLabMeasurements().distance_cm,15);
     renderMode.value='volume';renderMode.onchange();
     await requestNativeFrame();
+    const comparedCamera=JSON.stringify(camera),comparedStyle=JSON.stringify(meshStyle());
+    const comparisonRequests=requests,comparedReport=meshLastReport;
+    comparePoints.onclick();
+    assert.equal(renderMode.value,'points');
+    assert.equal(meshImage.style.display,'none');
+    assert.equal(meshLastReport,null);
+    assert.match(comparePoints.textContent,/Return to native volume/);
+    comparePoints.onclick();
+    assert.equal(renderMode.value,'volume');
+    assert.equal(meshLastReport,comparedReport);
+    assert.equal(meshImage.style.display,'block');
+    assert.equal(JSON.stringify(camera),comparedCamera);
+    assert.equal(JSON.stringify(meshStyle()),comparedStyle);
+    await requestNativeFrame();assert.equal(requests,comparisonRequests);
+    // Changed opacity must render again rather than display the cached frame.
+    comparePoints.onclick();opacity.value='.4';comparePoints.onclick();
+    assert.equal(meshLastReport,null);assert.equal(meshImage.style.display,'none');
+    await requestNativeFrame();assert.equal(requests,comparisonRequests+1);
+    opacity.value='.72';await requestNativeFrame();
+    // A changed snapshot or an image still decoding cannot inherit old metadata.
+    comparePoints.onclick();DATA.scene.sha256='another-scene';comparePoints.onclick();
+    assert.equal(meshLastReport,null);assert.equal(meshImage.style.display,'none');
+    DATA.scene.sha256='abc';await requestNativeFrame();
+    comparePoints.onclick();meshImage.src='pending-image';comparePoints.onclick();
+    assert.equal(meshLastReport,null);assert.equal(meshImage.style.display,'none');
+    await requestNativeFrame();
     await rulerPick({clientX:250,clientY:200});
     await rulerPick({clientX:550,clientY:200});
     assert.equal(picks,2); // Volume never reuses the face picker or invents a surface.
@@ -155,5 +183,5 @@ vm.runInContext(fs.readFileSync(path.join(directory, 'mesh_viewer.js'), 'utf8'),
     showAnnotations.checked=false; updateMeasurements();
     assert.equal(measurementHud.style.display,'none');
   })()`, context);
-  console.log('Native volume/face controls, stale-frame guards, refinement, presets, time/scale legend, and rulers passed');
+  console.log('Native volume/face controls, point comparison and cache guards, refinement, presets, time/scale legend, and rulers passed');
 })().catch(error => {console.error(error); process.exitCode = 1;});

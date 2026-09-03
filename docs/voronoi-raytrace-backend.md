@@ -33,7 +33,7 @@ display-box entrance. All traversed cells are available, including ones that
 make no visible contribution. The **Original cell values** mode holds each
 exported field constant within its native cell.
 
-The fresh-viewer default **Continuous field** blends the local linear
+The optional **Continuous field · slower** mode blends the local linear
 predictions described below with compact spatial weights. Original generator
 values are retained; the blend stays continuous across the old cell boundaries
 and is clipped to the full uploaded field range. Its slopes are limited locally,
@@ -42,9 +42,10 @@ neighbour range. It is a display reconstruction, not a conservative AREPO
 reconstruction. The [field-reconstruction notes](field-reconstruction-work.md)
 describe the algorithm and validation.
 
-The **Linear field** mode uses inverse-distance-squared weighted
+The fresh-viewer default **Linear field · fast** uses inverse-distance-squared weighted
 least-squares gradients from the stored native neighbour displacements. It fits
-the transformed colour scalar and display extinction separately. A slope
+the physical channel and gas density with fresh settings, or transformed colour
+and display extinction when the legacy transfer order is selected. A slope
 limiter constrains extrapolation towards neighbour generators; each sampled
 value is also bounded by the parent and its neighbours. Degenerate or
 unsupported fits use a zero gradient and are counted in the render report.
@@ -58,8 +59,8 @@ field is reproduced to float32 accuracy in a region where the limiter is inactiv
 The field can still jump between independently limited cells; it is not strictly
 continuous, nor is it AREPO's own gradient or a conservative mass reconstruction.
 
-The selectable **Legacy smoothing** mode interpolates
-the transformed colour scalar and display extinction using a compact Shepard
+The selectable **Legacy smoothing** mode interpolates the uploaded fields
+(physical values or legacy transfer coefficients) using a compact Shepard
 kernel. Up to eight nearby generators have positive weights; the ninth nearest
 generator sets the zero-weight support radius. Distances use periodic minimum
 images, and neighbours are deduplicated by native cell index. A best-first walk
@@ -76,7 +77,7 @@ still participates in the transparency interpolation.
 
 These are display interpolations, not AREPO's own gradient reconstruction, exact
 Sibson natural-neighbour interpolation, or a conservative reconstruction of gas
-mass. Neither is guaranteed to preserve a sharp shock. Original cell values remain
+mass. None is guaranteed to preserve a sharp shock. Original cell values remain
 available, and older saved volume presets keep that original mode. A smoother
 image is not evidence of better physical resolution. Cell sizes must be
 interpreted using the particular simulation's actual refinement/derefinement
@@ -209,7 +210,8 @@ is ready. Volume-only use creates no VTK/OpenGL window.
 `faces` for existing callers). Volume settings live under `parameters.volume`;
 `volume.reconstruction` accepts `continuous_linear`, `linear`,
 `piecewise_constant`, or `continuous` (legacy compact Shepard). Omitted API
-settings retain `linear`; a fresh browser selects `continuous_linear`.
+settings and fresh browsers retain `linear`; `continuous_linear` is an explicit
+quality option. Fresh browsers use four antialiased rays per pixel.
 `subpixel_samples` is 1 or 4 and `cell_samples` is 1 or 2 for interpolation. See the [volume example](../examples/native-volume-capture.example.json)
 and [face example](../examples/native-capture.example.json).
 
@@ -232,6 +234,20 @@ checks cover physical chord lengths, front-to-back integration, periodic faces,
 large absolute coordinate offsets, field/formula binding, and failure handling.
 The final regression and image-inspection record is maintained in
 [the quality notes](volume-preview-quality.md).
+
+The newer [field and inspection work](field-reconstruction-work.md) separates
+structural usefulness from image smoothness. The comparison button preserves
+camera/colour controls and reuses the last decoded native frame only when its
+entire request key and image source still match. A snapshot, camera, field,
+opacity or image-source change prevents that reuse.
+
+Manual snapshot loads can carry the physical viewport and display settings.
+The shell captures the latest view before replacing the iframe and binds the
+restore to the requested snapshot and scene hash. The new viewport is converted
+from physical centimetres using the new scene's centre/radius; the old snapshot
+binding and time are never copied. This path skips automatic pose activation,
+which could otherwise reset the view or request a different point budget.
+Explicit saved-pose navigation retains its separate hash-checked behaviour.
 
 Browser visual QA remains blocked by an admin-policy verification failure.
 Controller tests use a fake DOM/transport, and native output PNGs are inspected

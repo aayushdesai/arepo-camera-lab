@@ -1,4 +1,5 @@
 const renderMode=document.getElementById('renderMode'),meshImage=document.getElementById('meshImage'),meshNotice=document.getElementById('meshNotice');
+const comparePoints=document.getElementById('comparePoints');
 const meshEdges=document.getElementById('meshEdges'),meshInterior=document.getElementById('meshInterior'),meshLighting=document.getElementById('meshLighting');
 const meshDensityFloor=document.getElementById('meshDensityFloor'),meshFit=document.getElementById('meshFit');
 const volumeControls=document.getElementById('volumeControls'),volumeProfile=document.getElementById('volumeProfile'),volumeDensityReference=document.getElementById('volumeDensityReference'),volumeOpacityLength=document.getElementById('volumeOpacityLength'),volumeDensityPower=document.getElementById('volumeDensityPower'),volumeQuality=document.getElementById('volumeQuality');
@@ -8,12 +9,14 @@ const measurementHud=document.getElementById('measurementHud'),timeLabel=documen
 const legendTitle=document.getElementById('legendTitle'),legendGradient=document.getElementById('legendGradient'),legendLow=document.getElementById('legendLow'),legendHigh=document.getElementById('legendHigh');
 const rulerToggle=document.getElementById('rulerToggle'),rulerStatus=document.getElementById('rulerStatus'),rulerOverlay=document.getElementById('rulerOverlay'),showAnnotations=document.getElementById('showAnnotations'),measureUnit=document.getElementById('measureUnit');
 let meshBusy=false,meshPromise=null,meshLastKey=null,meshDisplayedCamera=null,meshLastReport=null,meshRequestSequence=0,meshFailureKey=null,meshFitRequested=false;
+let meshCachedFrame=null;
 let rulerPoints=[],rulerKind=null,rulerPicking=false,rulerProjection=null;
 let nativeInteractiveUntil=0;
 const meshLive=Boolean(DATA.scene.native_mesh_available)&&location.protocol.startsWith('http');
 const volumeLive=meshLive&&Boolean(DATA.scene.native_volume_available);
 const savedRenderer=localStorage.getItem('arepo_camera_lab_renderer_v002')||localStorage.getItem('arepo_camera_lab_renderer_v001');
 renderMode.value=meshLive?(savedRenderer==='points'?'points':savedRenderer==='mesh'?'mesh':volumeLive?'volume':'mesh'):'points';
+let compareReturnMode=renderMode.value==='mesh'?'mesh':volumeLive?'volume':'mesh';
 if(!meshLive)renderMode.querySelector('[value="mesh"]').disabled=true;
 if(!volumeLive)renderMode.querySelector('[value="volume"]').disabled=true;
 meshNotice.textContent=meshLive?'Native cell volume and geometry views; choose a transparency profile to expose the structure.':'Native views need the live server and a scene with native connectivity.';
@@ -23,6 +26,8 @@ function syncNativeControls(){
   const volume=renderMode.value==='volume';volumeControls.style.display=volume?'block':'none';
   for(const control of [meshEdges,meshInterior,meshLighting])control.disabled=volume||!nativeMode();
   meshDensityFloor.disabled=meshFit.disabled=!nativeMode();
+  comparePoints.disabled=!meshLive;
+  comparePoints.textContent=nativeMode()?'Compare with point cloud':`Return to native ${compareReturnMode==='volume'?'volume':'faces'}`;
   if(!rulerPoints.length)rulerStatus.textContent=renderMode.value==='mesh'?'The ruler picks native cell surfaces and measures 3D distance.':'The ruler measures projected distance in the camera plane.';
 }
 function volumeState(){return {density_reference:+volumeDensityReference.value,opacity_length_cm:+volumeOpacityLength.value*1e5,density_power:+volumeDensityPower.value,floor_softening_dex:+volumeFloorSoftening.value,reconstruction:volumeReconstruction.value,transfer_stage:volumePhysicalTransfer.checked?'after_reconstruction':'before_reconstruction',range_behavior:volumeClampColorRange.checked?'clamp':'hide',dense_fade_start:+volumeDenseFadeStart.value,dense_opacity_fraction:+volumeDenseOpacityFraction.value};}
@@ -58,8 +63,9 @@ async function requestNativeFrame(force=false){
       if(sequence!==meshRequestSequence||renderMode.value!==requestedMode)return;
       meshImage.style.display='block';meshLastKey=key;meshDisplayedCamera={...result.report.camera,...cleanBasis(result.report.camera.forward,result.report.camera.up)};meshLastReport=result.report;
       if(params.fit_visible){meshFitRequested=false;setCamera(meshDisplayedCamera);meshLastKey=meshKey({...params,camera:meshParameters().camera,fit_visible:false});}
-      const r=result.report,method=r.representation==='volume'?`Metal volume · ${{linear:'linear field',continuous:'legacy smoothing',piecewise_constant:'original cells'}[r.reconstruction]||r.reconstruction} · ${r.subpixel_samples} rays/pixel`:`${r.faces.toLocaleString()} native faces`;meshNotice.textContent=`${r.selected_cells.toLocaleString()} / ${r.native_cell_count.toLocaleString()} visible cells · ${method} · ${r.render_seconds.toFixed(2)} s`;
+      const r=result.report,method=r.representation==='volume'?`Metal volume · ${{linear:'linear field',continuous_linear:'continuous field',continuous:'legacy smoothing',piecewise_constant:'original cells'}[r.reconstruction]||r.reconstruction} · ${r.subpixel_samples} rays/pixel`:`${r.faces.toLocaleString()} native faces`;meshNotice.textContent=`${r.selected_cells.toLocaleString()} / ${r.native_cell_count.toLocaleString()} visible cells · ${method} · ${r.render_seconds.toFixed(2)} s`;
       if(r.empty_native_faces)meshNotice.textContent+=` · ${r.empty_native_faces} zero-area native faces`;
+      meshCachedFrame={key:meshLastKey,src:meshImage.src,report:meshLastReport,camera:meshDisplayedCamera,notice:meshNotice.textContent};
     }catch(error){meshFailureKey=key;meshNotice.textContent='Mesh view: '+error.message;}
     finally{meshBusy=false;}
   })();
@@ -71,7 +77,26 @@ async function awaitNativeFrame(){
   if(meshLastKey!==wanted)await requestNativeFrame(true);
   if(meshLastKey!==wanted)throw new Error(meshNotice.textContent);
 }
-renderMode.onchange=()=>{localStorage.setItem('arepo_camera_lab_renderer_v002',renderMode.value);meshRequestSequence++;meshLastKey=null;meshLastReport=null;meshDisplayedCamera=null;meshImage.style.display='none';rulerPoints=[];rulerKind=null;rulerProjection=null;meshFailureKey=null;syncNativeControls();};
+renderMode.onchange=()=>{
+  localStorage.setItem('arepo_camera_lab_renderer_v002',renderMode.value);
+  meshRequestSequence++;meshLastKey=null;meshLastReport=null;meshDisplayedCamera=null;meshImage.style.display='none';rulerPoints=[];rulerKind=null;rulerProjection=null;meshFailureKey=null;
+  if(nativeMode()){
+    compareReturnMode=renderMode.value;
+    // Reuse only the already-decoded image for this exact scene/camera/style.
+    // A pending response may have changed src before decode; never restore it
+    // using the previous frame's report in that case.
+    if(meshCachedFrame&&meshCachedFrame.key===meshKey(meshParameters())&&meshCachedFrame.src===meshImage.src){
+      meshLastKey=meshCachedFrame.key;meshLastReport=meshCachedFrame.report;meshDisplayedCamera=meshCachedFrame.camera;
+      meshNotice.textContent=meshCachedFrame.notice;meshImage.style.display='block';
+    }
+  }
+  syncNativeControls();updateMeasurements();
+};
+comparePoints.onclick=()=>{
+  if(!meshLive)return;
+  renderMode.value=nativeMode()?'points':compareReturnMode;
+  renderMode.onchange();markStyleDirty();
+};
 document.getElementById('meshRetry').onclick=()=>{meshFailureKey=null;meshLastKey=null;requestNativeFrame(true);};
 meshFit.onclick=()=>{markCameraModified();meshFitRequested=true;meshFailureKey=null;};
 document.getElementById('clearRuler').onclick=()=>{rulerPoints=[];rulerKind=null;rulerProjection=null;updateMeasurements();syncNativeControls();};
